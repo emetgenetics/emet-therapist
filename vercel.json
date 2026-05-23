@@ -1,11 +1,4 @@
 {
-  "buildCommand": "npm run build",
   "framework": "nextjs",
-  "regions": ["lhr1"],
-  "env": {
-    "NEXTAUTH_URL": "@nextauth-url",
-    "NEXTAUTH_SECRET": "@nextauth-secret",
-    "DATABASE_URL": "@database-url",
-    "OPENROUTER_API_KEY": "@openrouter-api-key"
-  }
+  "regions": ["lhr1"]
 }
