@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { authOptions } from '@/lib/auth';
 import { EmetLogo } from '@/components/ui/EmetLogo';
 import prisma from '@/lib/db';
+import type { TherapySession } from '@prisma/client';
 
 export default async function DashboardPage() {
   const session = await getServerSession(authOptions);
@@ -12,7 +13,7 @@ export default async function DashboardPage() {
     redirect('/login');
   }
 
-  const recentSessions = await prisma.therapySession.findMany({
+  const recentSessions: TherapySession[] = await prisma.therapySession.findMany({
     where: { userId: session.user.id },
     orderBy: { startedAt: 'desc' },
     take: 5,
@@ -20,14 +21,13 @@ export default async function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-slate-950">
-      {/* Background */}
       <div className="fixed inset-0 bg-gradient-to-br from-violet-900/10 via-slate-950 to-fuchsia-900/10 pointer-events-none" />
       
-      {/* Navigation */}
       <nav className="relative z-10 flex items-center justify-between px-8 py-6 border-b border-white/5">
         <EmetLogo size="sm" />
         <div className="flex items-center gap-4">
           <span className="text-slate-400 text-sm">{session.user.email}</span>
+          <Link href="/dashboard/settings" className="btn-ghost text-sm">Settings</Link>
           <form action="/api/auth/signout" method="POST">
             <button type="submit" className="btn-ghost text-sm">
               Sign Out
@@ -36,14 +36,12 @@ export default async function DashboardPage() {
         </div>
       </nav>
 
-      {/* Main Content */}
       <main className="relative z-10 max-w-6xl mx-auto px-8 py-12">
         <div className="mb-12">
           <h1 className="text-3xl font-bold text-white mb-2">Welcome back</h1>
           <p className="text-slate-400">Continue your healing journey with Emet</p>
         </div>
 
-        {/* Quick Start */}
         <div className="mb-12">
           <Link
             href="/session/new"
@@ -57,7 +55,6 @@ export default async function DashboardPage() {
           </Link>
         </div>
 
-        {/* Recent Sessions */}
         <div>
           <h2 className="text-xl font-semibold text-white mb-6">Recent Sessions</h2>
           
@@ -76,7 +73,7 @@ export default async function DashboardPage() {
             </div>
           ) : (
             <div className="space-y-4">
-              {recentSessions.map((s) => (
+              {recentSessions.map((s: TherapySession) => (
                 <div key={s.id} className="card-emet flex items-center justify-between">
                   <div>
                     <div className="flex items-center gap-3 mb-1">
