@@ -5,6 +5,15 @@ import prisma from '@/lib/db';
 import { EmetLogo } from '@/components/ui/EmetLogo';
 import Link from 'next/link';
 
+interface AdminEvent {
+  id: string;
+  eventType: string;
+  fromState: string | null;
+  toState: string | null;
+  createdAt: Date;
+  session: { id: string; user: { email: string } } | null;
+}
+
 export default async function AdminPage() {
   const session = await getServerSession(authOptions);
 
@@ -14,7 +23,7 @@ export default async function AdminPage() {
 
   const user = session.user;
 
-  const [userCount, sessionCount, recentEvents] = await Promise.all([
+  const [userCount, sessionCount, recentEventsRaw] = await Promise.all([
     prisma.user.count(),
     prisma.therapySession.count(),
     prisma.sessionEvent.findMany({
@@ -25,6 +34,8 @@ export default async function AdminPage() {
       },
     }),
   ]);
+
+  const recentEvents: AdminEvent[] = recentEventsRaw;
 
   const activeSessions = await prisma.therapySession.count({
     where: { currentState: { notIn: ['COMPLETED', 'ABANDONED'] } },
@@ -86,7 +97,7 @@ export default async function AdminPage() {
                 </tr>
               </thead>
               <tbody>
-                {recentEvents.map((event) => (
+                {recentEvents.map((event: AdminEvent) => (
                   <tr key={event.id} className="border-b border-white/5 hover:bg-white/5">
                     <td className="px-6 py-3">
                       <span className={`px-2 py-1 rounded text-xs font-medium ${
