@@ -2,10 +2,10 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useSessionStore } from '@/lib/store';
-import { RealtimeClient } from '@/lib/realtime';
+import { GeminiLiveClient } from '@/lib/gemini-live';
 
 interface EmergencyOverlayProps {
-  client: RealtimeClient;
+  client: GeminiLiveClient;
 }
 
 export default function EmergencyOverlay({ client }: EmergencyOverlayProps) {
@@ -15,26 +15,23 @@ export default function EmergencyOverlay({ client }: EmergencyOverlayProps) {
 
   // Breathing pacer: 4 second cycle
   useEffect(() => {
-    let startTime = performance.now();
     const duration = 4000;
-
     const animate = (now: number) => {
-      const elapsed = (now - startTime) % duration;
+      const elapsed = (now % duration);
       const progress = elapsed / duration;
-      // Sine wave from 0.6 to 1.0
       setScale(0.6 + 0.4 * (0.5 + 0.5 * Math.sin(progress * Math.PI * 2 - Math.PI / 2)));
       requestAnimationFrame(animate);
     };
-
     const frame = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(frame);
   }, []);
 
-  // Hard-mute on mount
+  // Hard-mute on mount — immediate, no AI involvement
   useEffect(() => {
     client.muteMic();
-    if (client.remoteAudio) {
-      client.remoteAudio.pause();
+    // Stop sending audio to Gemini by closing the mic stream tracks
+    if (client.micStream) {
+      client.micStream.getTracks().forEach((t) => t.stop());
     }
 
     return () => {
@@ -45,29 +42,30 @@ export default function EmergencyOverlay({ client }: EmergencyOverlayProps) {
   }, [client]);
 
   const handleResolve = useCallback(() => {
-    // Unmute remote audio
-    if (client.remoteAudio) {
-      client.remoteAudio.play().catch(() => {});
-    }
-
     resolveEmergency();
 
-    // Send context to AI after a short delay
+    // Send context to Gemini after a short delay
     resolveTimeoutRef.current = setTimeout(() => {
-      client.sendEvent({
-        type: 'conversation.item.create',
-        item: {
-          type: 'message',
-          role: 'user',
-          content: [
-            {
-              type: 'input_text',
-              text: 'I experienced some distress but I am calmer now. Please help me ground and close the session.',
+      if (client.ws?.readyState === WebSocket.OPEN) {
+        // Send a text message to Gemini explaining the situation
+        client.ws.send(
+          JSON.stringify({
+            clientContent: {
+              turns: [
+                {
+                  role: 'user',
+                  parts: [
+                    {
+                      text: 'I experienced some distress but I am calmer now. Please help me ground and close the session.',
+                    },
+                  ],
+                },
+              ],
+              turnComplete: true,
             },
-          ],
-        },
-      });
-      client.sendEvent({ type: 'response.create' });
+          })
+        );
+      }
     }, 500);
   }, [client, resolveEmergency]);
 

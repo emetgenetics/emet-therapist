@@ -1,8 +1,8 @@
 import { useSessionStore } from './store';
 
+// Gemini Live API uses functionDeclarations format (not OpenAI's tools format)
 export const TOOL_SCHEMAS = [
   {
-    type: 'function',
     name: 'trigger_bls',
     description:
       'Start bilateral stimulation (visual lightbar + audio panning). Use during DESENSITIZATION (fast, white) and RECONNECTION (slow, amber). After calling this, the AI must say NOTHING else until the user speaks after the set completes.',
@@ -29,7 +29,6 @@ export const TOOL_SCHEMAS = [
     },
   },
   {
-    type: 'function',
     name: 'transition_state',
     description: 'Transition the IADC session to a new psychological state.',
     parameters: {
@@ -53,7 +52,6 @@ export const TOOL_SCHEMAS = [
     },
   },
   {
-    type: 'function',
     name: 'update_suds',
     description: "Record the user's distress level.",
     parameters: {

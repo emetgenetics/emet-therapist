@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useSessionStore } from '@/lib/store';
-import { RealtimeClient, ConnectionState } from '@/lib/realtime';
+import { GeminiLiveClient, ConnectionState } from '@/lib/gemini-live';
 import Lightbar from './Lightbar';
 import AudioPanner from './AudioPanner';
 import VoiceIndicator from './VoiceIndicator';
@@ -10,7 +10,7 @@ import EmergencyOverlay from './EmergencyOverlay';
 import { getPromptForState } from '@/lib/prompts';
 
 interface SessionProps {
-  client: RealtimeClient;
+  client: GeminiLiveClient;
 }
 
 const PHASE_LABELS: Record<string, string> = {
@@ -23,7 +23,6 @@ const PHASE_LABELS: Record<string, string> = {
   EMERGENCY_GROUNDING: 'Emergency',
 };
 
-// Map BLS color to audio frequency per prompt spec
 const COLOR_FREQ: Record<string, number> = {
   white: 440,
   amber: 330,
@@ -43,9 +42,7 @@ export default function Session({ client }: SessionProps) {
 
   const [connectionState, setConnectionState] = useState<ConnectionState>('connecting');
   const [isAiSpeaking, setIsAiSpeaking] = useState(false);
-  // Track previous BLS running state to detect stop transitions
   const prevBlsRunningRef = useRef(false);
-  // Timer for delayed mic unmute after BLS fade-out
   const unmuteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Mic muting sync — CRITICAL: mic MUST mute during BLS
@@ -53,7 +50,6 @@ export default function Session({ client }: SessionProps) {
     if (isMicMuted) {
       client.muteMic();
     }
-    // NOTE: unmute is NOT handled here — it's delayed to match AudioPanner fade-out
   }, [isMicMuted, client]);
 
   // Detect BLS stop → delay unmute by 500ms to match AudioPanner fade-out
@@ -62,11 +58,9 @@ export default function Session({ client }: SessionProps) {
     prevBlsRunningRef.current = bls.isRunning;
 
     if (wasRunning && !bls.isRunning) {
-      // BLS just stopped — clear any existing timer
       if (unmuteTimerRef.current) {
         clearTimeout(unmuteTimerRef.current);
       }
-      // Delay unmute by 500ms to let AudioPanner fade-out complete
       unmuteTimerRef.current = setTimeout(() => {
         useSessionStore.getState().setMicMuted(false);
         client.unmuteMic();
@@ -93,44 +87,19 @@ export default function Session({ client }: SessionProps) {
       }
     };
 
-    client.onToolCall = (name, args, callId) => {
-      // Send tool output back to AI — required or AI hangs forever
-      const result = { success: true, message: `${name} executed` };
-      client.sendToolOutput(callId, result);
-
+    client.onToolCall = (name, args) => {
       // If transition_state was called, update the session prompt
       if (name === 'transition_state' && args.newState) {
         const newState = args.newState as string;
         setPhase(newState as Parameters<typeof setPhase>[0]);
-
-        // Use setInstructions for live session update
-        client.setInstructions(
-          getPromptForState(
-            newState as Parameters<typeof getPromptForState>[0]
-          )
-        );
       }
     };
 
     client.onError = (message) => {
-      console.error('[Session] Realtime error:', message);
+      console.error('[Session] Gemini error:', message);
     };
 
-    // Detect AI speaking via polling remoteAudio element
-    const speakingInterval = setInterval(() => {
-      if (
-        client.remoteAudio &&
-        !client.remoteAudio.paused &&
-        !client.remoteAudio.ended
-      ) {
-        setIsAiSpeaking(true);
-      } else {
-        setIsAiSpeaking(false);
-      }
-    }, 100);
-
     return () => {
-      clearInterval(speakingInterval);
       client.onStateChange = null;
       client.onTranscript = null;
       client.onToolCall = null;
@@ -147,7 +116,6 @@ export default function Session({ client }: SessionProps) {
     useSessionStore.getState().reset();
   }, [client]);
 
-  // Emergency overlay — renders above everything, hard-mutes audio immediately
   if (isEmergency) {
     return <EmergencyOverlay client={client} />;
   }
@@ -175,7 +143,6 @@ export default function Session({ client }: SessionProps) {
             isBlsActive={bls.isRunning}
           />
 
-          {/* Emergency Button — always visible, red circle */}
           <button
             onClick={handleEmergency}
             className="w-8 h-8 rounded-full bg-red-500/20 border border-red-500/40 flex items-center justify-center hover:bg-red-500/30 transition-colors"
@@ -186,7 +153,7 @@ export default function Session({ client }: SessionProps) {
         </div>
       </div>
 
-      {/* Center: Lightbar (only when BLS is running) */}
+      {/* Center: Lightbar */}
       <div className="flex-1 relative">
         {bls.isRunning && (
           <div className="absolute inset-0">
@@ -242,7 +209,7 @@ export default function Session({ client }: SessionProps) {
         </div>
       </div>
 
-      {/* Audio Panner — non-visual, handles BLS audio synced to lightbar */}
+      {/* Audio Panner */}
       {bls.isRunning && (
         <AudioPanner
           isRunning={bls.isRunning}

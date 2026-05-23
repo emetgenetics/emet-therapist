@@ -2,10 +2,10 @@
 
 import { useState, useRef, useCallback } from 'react';
 import { useSessionStore } from '@/lib/store';
-import { RealtimeClient } from '@/lib/realtime';
+import { GeminiLiveClient } from '@/lib/gemini-live';
 
 interface PreFlightProps {
-  onReady: (client: RealtimeClient) => void;
+  onReady: (client: GeminiLiveClient) => void;
 }
 
 export default function PreFlight({ onReady }: PreFlightProps) {
@@ -52,7 +52,6 @@ export default function PreFlight({ onReady }: PreFlightProps) {
     osc.start();
     osc.stop(ctx.currentTime + 2);
 
-    // Wait for test to finish
     await new Promise((r) => setTimeout(r, 2500));
 
     const confirmed = window.confirm(
@@ -74,7 +73,7 @@ export default function PreFlight({ onReady }: PreFlightProps) {
     setConnecting(true);
 
     try {
-      const client = new RealtimeClient();
+      const client = new GeminiLiveClient();
       await client.connect();
       setPhase('INTAKE');
       onReady(client);

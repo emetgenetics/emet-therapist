@@ -1,6 +1,6 @@
 'use client';
 
-import type { ConnectionState } from '@/lib/realtime';
+import type { ConnectionState } from '@/lib/gemini-live';
 
 interface VoiceIndicatorProps {
   connectionState: ConnectionState;
