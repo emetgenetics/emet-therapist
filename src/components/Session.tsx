@@ -42,6 +42,7 @@ export default function Session({ client }: SessionProps) {
 
   const [connectionState, setConnectionState] = useState<ConnectionState>('connecting');
   const [isAiSpeaking, setIsAiSpeaking] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
   const prevBlsRunningRef = useRef(false);
   const unmuteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -88,15 +89,20 @@ export default function Session({ client }: SessionProps) {
     };
 
     client.onToolCall = (name, args) => {
-      // If transition_state was called, update the session prompt
       if (name === 'transition_state' && args.newState) {
         const newState = args.newState as string;
         setPhase(newState as Parameters<typeof setPhase>[0]);
+        client.setInstructions(
+          getPromptForState(
+            newState as Parameters<typeof getPromptForState>[0]
+          )
+        );
       }
     };
 
     client.onError = (message) => {
       console.error('[Session] Gemini error:', message);
+      setErrorMessage(message);
     };
 
     return () => {
@@ -153,7 +159,7 @@ export default function Session({ client }: SessionProps) {
         </div>
       </div>
 
-      {/* Center: Lightbar */}
+      {/* Center: Lightbar or Status */}
       <div className="flex-1 relative">
         {bls.isRunning && (
           <div className="absolute inset-0">
@@ -188,6 +194,9 @@ export default function Session({ client }: SessionProps) {
                   ? 'Disconnected'
                   : 'Connecting...'}
               </p>
+              {errorMessage && (
+                <p className="text-red-400 text-xs mt-2 max-w-xs mx-auto">{errorMessage}</p>
+              )}
             </div>
           </div>
         )}
