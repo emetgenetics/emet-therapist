@@ -47,6 +47,7 @@ export class GeminiLiveClient {
   onError: ((message: string) => void) | null = null;
 
   private currentInstructions = '';
+  private connectionResolved = false;
 
   setInstructions(instructions: string) {
     this.currentInstructions = instructions;
@@ -55,6 +56,7 @@ export class GeminiLiveClient {
   async connect() {
     try {
       this.onStateChange?.('connecting');
+      this.connectionResolved = false;
 
       const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
       if (!apiKey) {
@@ -62,27 +64,49 @@ export class GeminiLiveClient {
       }
 
       const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${apiKey}`;
+      console.log('[GeminiLive] Connecting to:', wsUrl.replace(apiKey, '***'));
       this.ws = new WebSocket(wsUrl);
 
       await new Promise<void>((resolve, reject) => {
         if (!this.ws) return reject(new Error('WebSocket not created'));
 
+        const timeout = setTimeout(() => {
+          if (!this.connectionResolved) {
+            this.connectionResolved = true;
+            reject(new Error('WebSocket connection timeout after 10s'));
+          }
+        }, 10000);
+
         this.ws.onopen = () => {
           console.log('[GeminiLive] WebSocket connected');
-          resolve();
+          if (!this.connectionResolved) {
+            this.connectionResolved = true;
+            clearTimeout(timeout);
+            resolve();
+          }
         };
 
         this.ws.onerror = (err) => {
-          console.error('[GeminiLive] WebSocket error:', err);
-          reject(new Error('WebSocket connection failed'));
+          console.error('[GeminiLive] WebSocket error event:', err);
+          // onerror usually followed by onclose, so don't reject here
+          // let onclose handle it
         };
 
         this.ws.onclose = (event) => {
-          console.log('[GeminiLive] WebSocket closed:', event.code, event.reason);
-          this.onStateChange?.('disconnected');
+          console.log('[GeminiLive] WebSocket closed:', event.code, event.reason, 'wasClean:', event.wasClean);
+          if (!this.connectionResolved) {
+            this.connectionResolved = true;
+            clearTimeout(timeout);
+            // Common close codes:
+            // 1000 = normal, 1006 = abnormal, 4000+ = app-specific
+            let reason = event.reason || 'Unknown';
+            if (event.code === 1006) reason = 'Connection refused or network error';
+            if (event.code === 4000) reason = 'Bad request — check model name or API key';
+            reject(new Error(`WebSocket closed (${event.code}): ${reason}`));
+          } else {
+            this.onStateChange?.('disconnected');
+          }
         };
-
-        setTimeout(() => reject(new Error('WebSocket connection timeout')), 10000);
       });
 
       this.ws.onmessage = (event) => {
@@ -114,7 +138,7 @@ export class GeminiLiveClient {
       };
 
       this.ws.send(JSON.stringify(setupMessage));
-      console.log('[GeminiLive] Setup message sent');
+      console.log('[GeminiLive] Setup message sent with model:', GEMINI_MODEL);
 
       // Initialize audio capture
       await this.initAudioCapture();
