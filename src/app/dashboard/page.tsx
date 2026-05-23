@@ -4,7 +4,6 @@ import Link from 'next/link';
 import { authOptions } from '@/lib/auth';
 import { EmetLogo } from '@/components/ui/EmetLogo';
 import prisma from '@/lib/db';
-import type { TherapySession } from '@prisma/client';
 
 export default async function DashboardPage() {
   const session = await getServerSession(authOptions);
@@ -13,7 +12,7 @@ export default async function DashboardPage() {
     redirect('/login');
   }
 
-  const recentSessions: TherapySession[] = await prisma.therapySession.findMany({
+  const recentSessions = await prisma.therapySession.findMany({
     where: { userId: session.user.id },
     orderBy: { startedAt: 'desc' },
     take: 5,
@@ -73,7 +72,7 @@ export default async function DashboardPage() {
             </div>
           ) : (
             <div className="space-y-4">
-              {recentSessions.map((s: TherapySession) => (
+              {recentSessions.map((s) => (
                 <div key={s.id} className="card-emet flex items-center justify-between">
                   <div>
                     <div className="flex items-center gap-3 mb-1">
