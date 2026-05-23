@@ -1,20 +1,16 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { EmetLogo } from '@/components/ui/EmetLogo';
 import { BLSVisual } from '@/components/bls/BLSVisual';
 import { BLSAudioEngine } from '@/components/bls/BLSAudioEngine';
-import { SessionStateIndicator } from '@/components/session/SessionStateIndicator';
-import { DistressMeter } from '@/components/session/DistressMeter';
-import { EmergencyButton } from '@/components/session/EmergencyButton';
-import { TranscriptDisplay } from '@/components/session/TranscriptDisplay';
-import type { SessionState } from '@/lib/store/session-store';
+import { EmetLogo } from '@/components/ui/EmetLogo';
+import { getSystemPrompt, type TherapyState } from '@/lib/openrouter';
 
 interface SessionData {
   id: string;
-  currentState: SessionState;
+  currentState: TherapyState;
   distressLevel: number | null;
   sessionGoals: string | null;
   startedAt: string;
@@ -24,21 +20,14 @@ interface TranscriptEntry {
   id: string;
   speaker: 'CLIENT' | 'AI_THERAPIST' | 'SYSTEM';
   content: string;
-  timestamp: string;
+  timestamp: Date;
 }
 
-const BLS_CONFIGS: Record<string, { visualPattern: 'horizontal' | 'circular' | 'butterfly' | 'dotfield'; visualSpeed: number; visualIntensity: number; visualColorPrimary: string; visualColorSecondary: string }> = {
-  DESENSITIZATION: { visualPattern: 'horizontal', visualSpeed: 80, visualIntensity: 0.8, visualColorPrimary: '#8B5CF6', visualColorSecondary: '#C4B5FD' },
-  RECONNECTION: { visualPattern: 'circular', visualSpeed: 40, visualIntensity: 0.5, visualColorPrimary: '#F59E0B', visualColorSecondary: '#FCD34D' },
-  INTEGRATION: { visualPattern: 'horizontal', visualSpeed: 25, visualIntensity: 0.3, visualColorPrimary: '#10B981', visualColorSecondary: '#6EE7B7' },
-  EMERGENCY_GROUNDING: { visualPattern: 'horizontal', visualSpeed: 20, visualIntensity: 0.25, visualColorPrimary: '#3B82F6', visualColorSecondary: '#93C5FD' },
-};
-
-const BLS_AUDIO_CONFIGS: Record<string, { auditoryFrequency: number; auditoryVolume: number; auditoryWaveform: OscillatorType }> = {
-  DESENSITIZATION: { auditoryFrequency: 440, auditoryVolume: 0.15, auditoryWaveform: 'sine' },
-  RECONNECTION: { auditoryFrequency: 330, auditoryVolume: 0.1, auditoryWaveform: 'sine' },
-  INTEGRATION: { auditoryFrequency: 220, auditoryVolume: 0.08, auditoryWaveform: 'sine' },
-  EMERGENCY_GROUNDING: { auditoryFrequency: 196, auditoryVolume: 0.06, auditoryWaveform: 'sine' },
+const BLS_CONFIGS: Record<string, { visualPattern: 'horizontal' | 'circular' | 'butterfly' | 'dotfield'; visualSpeed: number; visualIntensity: number; visualColorPrimary: string; visualColorSecondary: string; auditoryFrequency: number; auditoryVolume: number }> = {
+  DESENSITIZATION: { visualPattern: 'horizontal', visualSpeed: 80, visualIntensity: 0.8, visualColorPrimary: '#8B5CF6', visualColorSecondary: '#C4B5FD', auditoryFrequency: 440, auditoryVolume: 0.15 },
+  RECONNECTION: { visualPattern: 'circular', visualSpeed: 40, visualIntensity: 0.5, visualColorPrimary: '#F59E0B', visualColorSecondary: '#FCD34D', auditoryFrequency: 330, auditoryVolume: 0.1 },
+  INTEGRATION: { visualPattern: 'horizontal', visualSpeed: 25, visualIntensity: 0.3, visualColorPrimary: '#10B981', visualColorSecondary: '#6EE7B7', auditoryFrequency: 220, auditoryVolume: 0.08 },
+  EMERGENCY_GROUNDING: { visualPattern: 'horizontal', visualSpeed: 20, visualIntensity: 0.25, visualColorPrimary: '#3B82F6', visualColorSecondary: '#93C5FD', auditoryFrequency: 196, auditoryVolume: 0.06 },
 };
 
 export default function SessionPage() {
@@ -52,24 +41,26 @@ export default function SessionPage() {
   const [error, setError] = useState('');
   const [isEnding, setIsEnding] = useState(false);
 
-  const isBLSActive = ['DESENSITIZATION', 'RECONNECTION', 'INTEGRATION', 'EMERGENCY_GROUNDING'].includes(
-    session?.currentState || ''
-  );
+  // Voice state
+  const [isListening, setIsListening] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [interimText, setInterimText] = useState('');
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [micPermission, setMicPermission] = useState<'granted' | 'denied' | 'prompt'>('prompt');
+  const [voiceSupported, setVoiceSupported] = useState(false);
 
-  const blsConfig = BLS_CONFIGS[session?.currentState || ''] || {
-    pattern: 'horizontal' as const,
-    speed: 60,
-    intensity: 0.5,
-    color1: '#8B5CF6',
-    color2: '#C4B5FD',
-  };
+  // BLS state
+  const [blsActive, setBlsActive] = useState(false);
+  const [showBLS, setShowBLS] = useState(true);
 
-  const blsAudioConfig = BLS_AUDIO_CONFIGS[session?.currentState || ''] || {
-    frequency: 440,
-    volume: 0.1,
-    waveform: 'sine' as OscillatorType,
-  };
+  // Text input fallback
+  const [textInput, setTextInput] = useState('');
 
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const synthRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const aiResponseCountRef = useRef(0);
+
+  // Fetch session data
   const fetchSession = useCallback(async () => {
     try {
       const res = await fetch(`/api/sessions/${sessionId}`);
@@ -81,7 +72,7 @@ export default function SessionPage() {
           id: t.id as string,
           speaker: t.speaker as 'CLIENT' | 'AI_THERAPIST' | 'SYSTEM',
           content: t.content as string,
-          timestamp: t.timestamp as string,
+          timestamp: new Date(t.timestamp as string),
         })));
       }
     } catch (err) {
@@ -93,38 +84,222 @@ export default function SessionPage() {
 
   useEffect(() => {
     fetchSession();
-    const interval = setInterval(fetchSession, 10000);
+    const interval = setInterval(fetchSession, 15000);
     return () => clearInterval(interval);
   }, [fetchSession]);
 
-  const updateState = async (newState: SessionState) => {
+  // Check voice support
+  useEffect(() => {
+    const SpeechRecognitionAPI = (window as unknown as Record<string, unknown>).SpeechRecognition || (window as unknown as Record<string, unknown>).webkitSpeechRecognition;
+    setVoiceSupported(!!SpeechRecognitionAPI);
+    if (navigator.permissions) {
+      navigator.permissions.query({ name: 'microphone' as PermissionName }).then((result) => {
+        setMicPermission(result.state === 'granted' ? 'granted' : result.state === 'denied' ? 'denied' : 'prompt');
+      }).catch(() => {});
+    }
+  }, []);
+
+  // Auto-start voice session when ready
+  useEffect(() => {
+    if (session && voiceSupported && micPermission === 'granted' && !isListening && !isSpeaking && !isProcessing) {
+      // Small delay to let UI render
+      const timer = setTimeout(() => {
+        startVoiceSession();
+      }, 1500);
+      return () => clearTimeout(timer);
+    }
+  }, [session, voiceSupported, micPermission]);
+
+  // Update BLS based on state
+  useEffect(() => {
+    if (!session) return;
+    const shouldBeActive = ['DESENSITIZATION', 'RECONNECTION', 'INTEGRATION', 'EMERGENCY_GROUNDING'].includes(session.currentState);
+    setBlsActive(shouldBeActive);
+  }, [session?.currentState]);
+
+  // Speak AI response using TTS
+  const speakResponse = useCallback((text: string) => {
+    if (!('speechSynthesis' in window)) return;
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 0.85;
+    utterance.pitch = 0.95;
+    utterance.volume = 1;
+    utterance.onstart = () => setIsSpeaking(true);
+    utterance.onend = () => {
+      setIsSpeaking(false);
+      // Auto-listen after speaking
+      setTimeout(() => startListening(), 500);
+    };
+    utterance.onerror = () => setIsSpeaking(false);
+    synthRef.current = utterance;
+    window.speechSynthesis.speak(utterance);
+  }, []);
+
+  // Start listening with Whisper (via browser SpeechRecognition)
+  const startListening = useCallback(() => {
+    const SpeechRecognitionAPI = (window as unknown as Record<string, unknown>).SpeechRecognition || (window as unknown as Record<string, unknown>).webkitSpeechRecognition;
+    if (!SpeechRecognitionAPI || isListening || isSpeaking || isProcessing) return;
+
+    const recognition = new (SpeechRecognitionAPI as new () => SpeechRecognition)();
+    recognition.lang = 'en-US';
+    recognition.continuous = false;
+    recognition.interimResults = true;
+
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      let interim = '';
+      let final = '';
+      for (let i = 0; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          final += transcript;
+        } else {
+          interim += transcript;
+        }
+      }
+      setInterimText(interim);
+      if (final) {
+        handleUserInput(final);
+      }
+    };
+
+    recognition.onerror = () => {
+      setIsListening(false);
+      setInterimText('');
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+      setInterimText('');
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
+    setIsListening(true);
+    setInterimText('');
+  }, [isListening, isSpeaking, isProcessing]);
+
+  // Stop listening
+  const stopListening = useCallback(() => {
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+    }
+    setIsListening(false);
+    setInterimText('');
+  }, []);
+
+  // Handle user input (from voice or text)
+  const handleUserInput = useCallback(async (text: string) => {
+    if (!text.trim() || isProcessing || !session) return;
+
+    setIsProcessing(true);
+    stopListening();
+    window.speechSynthesis.cancel();
+    setIsSpeaking(false);
+
+    const userEntry: TranscriptEntry = {
+      id: crypto.randomUUID(),
+      speaker: 'CLIENT',
+      content: text.trim(),
+      timestamp: new Date(),
+    };
+    setTranscripts(prev => [...prev, userEntry]);
+
+    try {
+      const res = await fetch('/api/therapy/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId,
+          message: text.trim(),
+          sessionState: session.currentState,
+          distressLevel: session.distressLevel || 0,
+          sessionGoals: session.sessionGoals,
+          transcriptHistory: [...transcripts, userEntry].slice(-20).map(t => ({
+            speaker: t.speaker,
+            content: t.content,
+          })),
+        }),
+      });
+
+      if (!res.ok) throw new Error('Failed to get response');
+
+      const data = await res.json();
+
+      const aiEntry: TranscriptEntry = {
+        id: crypto.randomUUID(),
+        speaker: 'AI_THERAPIST',
+        content: data.response,
+        timestamp: new Date(),
+      };
+      setTranscripts(prev => [...prev, aiEntry]);
+
+      // Update session state if AI triggered a transition
+      if (data.newState && data.newState !== session.currentState) {
+        await updateSessionState(data.newState);
+      }
+
+      // Update distress level if AI detected change
+      if (data.distressLevel !== undefined && data.distressLevel !== session.distressLevel) {
+        await updateDistressLevel(data.distressLevel);
+      }
+
+      // Speak the response
+      speakResponse(data.response);
+      aiResponseCountRef.current += 1;
+
+    } catch (err) {
+      console.error('Chat error:', err);
+      const errorEntry: TranscriptEntry = {
+        id: crypto.randomUUID(),
+        speaker: 'SYSTEM',
+        content: 'I apologize, I am having a moment of difficulty. Please take a breath and try again.',
+        timestamp: new Date(),
+      };
+      setTranscripts(prev => [...prev, errorEntry]);
+      speakResponse(errorEntry.content);
+    } finally {
+      setIsProcessing(false);
+    }
+  }, [session, transcripts, sessionId, isProcessing, stopListening, speakResponse]);
+
+  const updateSessionState = async (newState: TherapyState) => {
     try {
       await fetch(`/api/sessions/${sessionId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ currentState: newState }),
       });
-      setSession((prev) => prev ? { ...prev, currentState: newState } : prev);
+      setSession(prev => prev ? { ...prev, currentState: newState } : prev);
     } catch (err) {
       console.error('State update error:', err);
     }
   };
 
-  const updateDistress = async (level: number) => {
+  const updateDistressLevel = async (level: number) => {
     try {
       await fetch(`/api/sessions/${sessionId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ distressLevel: level }),
       });
-      setSession((prev) => prev ? { ...prev, distressLevel: level } : prev);
+      setSession(prev => prev ? { ...prev, distressLevel: level } : prev);
     } catch (err) {
       console.error('Distress update error:', err);
     }
   };
 
   const handleEmergency = async () => {
-    await updateState('EMERGENCY_GROUNDING');
+    await updateSessionState('EMERGENCY_GROUNDING');
+    const entry: TranscriptEntry = {
+      id: crypto.randomUUID(),
+      speaker: 'SYSTEM',
+      content: 'Emergency grounding activated. I am right here. You are safe. Look around your room and name 5 things you can see out loud. Feel your feet on the floor.',
+      timestamp: new Date(),
+    };
+    setTranscripts(prev => [...prev, entry]);
+    speakResponse(entry.content);
   };
 
   const handleEndSession = async () => {
@@ -142,45 +317,48 @@ export default function SessionPage() {
     }
   };
 
-  const handleSendMessage = async (message: string) => {
-    // Add user message to transcript
-    const userEntry: TranscriptEntry = {
-      id: crypto.randomUUID(),
-      speaker: 'CLIENT',
-      content: message,
-      timestamp: new Date().toISOString(),
-    };
-    setTranscripts((prev) => [...prev, userEntry]);
-
-    try {
-      const res = await fetch('/api/therapy/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId, message }),
-      });
-
-      if (!res.ok) throw new Error('Failed to get response');
-
-      const data = await res.json();
-      const aiEntry: TranscriptEntry = {
-        id: crypto.randomUUID(),
-        speaker: 'AI_THERAPIST',
-        content: data.response,
-        timestamp: new Date().toISOString(),
-      };
-      setTranscripts((prev) => [...prev, aiEntry]);
-
-      // Speak the response
-      if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-        const utterance = new SpeechSynthesisUtterance(data.response);
-        utterance.rate = 0.85;
-        utterance.pitch = 0.95;
-        window.speechSynthesis.speak(utterance);
-      }
-    } catch (err) {
-      console.error('Chat error:', err);
+  const handleTextSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (textInput.trim()) {
+      handleUserInput(textInput);
+      setTextInput('');
     }
+  };
+
+  const requestMicPermission = async () => {
+    try {
+      await navigator.mediaDevices.getUserMedia({ audio: true });
+      setMicPermission('granted');
+      startVoiceSession();
+    } catch {
+      setMicPermission('denied');
+    }
+  };
+
+  const startVoiceSession = () => {
+    if (micPermission !== 'granted') {
+      requestMicPermission();
+      return;
+    }
+    startListening();
+  };
+
+  const blsConfig = BLS_CONFIGS[session?.currentState || ''] || {
+    visualPattern: 'horizontal' as const, visualSpeed: 60, visualIntensity: 0.5,
+    visualColorPrimary: '#8B5CF6', visualColorSecondary: '#C4B5FD',
+    auditoryFrequency: 440, auditoryVolume: 0.1,
+  };
+
+  const phaseLabels: Record<string, string> = {
+    PRE_FLIGHT: 'Getting Ready',
+    INTAKE: 'Building Connection',
+    DESENSITIZATION: 'Processing with BLS',
+    PIVOT: 'Transitioning',
+    RECONNECTION: 'Open Reconnection',
+    INTEGRATION: 'Integrating Experience',
+    EMERGENCY_GROUNDING: 'Emergency Grounding Active',
+    COMPLETED: 'Session Complete',
+    ABANDONED: 'Session Ended',
   };
 
   if (loading) {
@@ -212,175 +390,190 @@ export default function SessionPage() {
         <Link href="/dashboard">
           <EmetLogo size="sm" showText={false} />
         </Link>
-
-        <div className="flex items-center gap-6">
-          <SessionStateIndicator state={session?.currentState || 'PRE_FLIGHT'} />
-          <div className="w-px h-6 bg-white/10" />
-          <DistressMeter
-            level={session?.distressLevel || 0}
-            onChange={updateDistress}
-          />
-          <EmergencyButton onActivate={handleEmergency} />
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full ${blsActive ? 'bg-violet-500 animate-pulse' : 'bg-slate-500'}`} />
+            <span className="text-xs text-slate-400 uppercase tracking-wider">
+              {phaseLabels[session?.currentState || 'PRE_FLIGHT']}
+            </span>
+          </div>
+          <button onClick={handleEmergency} className="px-3 py-1.5 rounded-lg text-xs font-medium bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20">
+            Emergency
+          </button>
+          <button onClick={handleEndSession} disabled={isEnding} className="btn-ghost text-sm text-red-400 hover:text-red-300">
+            {isEnding ? 'Ending...' : 'End Session'}
+          </button>
         </div>
-
-        <button
-          onClick={handleEndSession}
-          disabled={isEnding}
-          className="btn-ghost text-sm text-red-400 hover:text-red-300"
-        >
-          {isEnding ? 'Ending...' : 'End Session'}
-        </button>
       </nav>
 
       {/* Main content */}
       <div className="flex-1 flex overflow-hidden">
         {/* BLS Panel */}
-        <div className="w-1/2 relative bg-[#020617]">
-          <BLSVisual
-            isRunning={isBLSActive}
-            config={blsConfig}
-            className="absolute inset-0"
-          />
-          <BLSAudioEngine
-            isRunning={isBLSActive}
-            config={blsAudioConfig}
-          />
+        {showBLS && (
+          <div className="w-1/2 relative bg-[#020617]">
+            <BLSVisual isRunning={blsActive} config={blsConfig} className="absolute inset-0" />
+            <BLSAudioEngine isRunning={blsActive} config={{
+              auditoryFrequency: blsConfig.auditoryFrequency,
+              auditoryVolume: blsConfig.auditoryVolume,
+              auditoryWaveform: 'sine',
+            }} />
 
-          {/* Phase overlay */}
-          <div className="absolute bottom-6 left-6 right-6">
-            <div className="glass-dark rounded-xl p-4">
-              <div className="flex items-center gap-3 mb-2">
-                <div className={`w-2 h-2 rounded-full ${
-                  session?.currentState === 'EMERGENCY_GROUNDING' ? 'bg-red-500 animate-pulse' :
-                  isBLSActive ? 'bg-violet-500 animate-pulse' : 'bg-slate-500'
-                }`} />
-                <span className="text-xs text-slate-400 uppercase tracking-wider">
-                  {session?.currentState === 'PRE_FLIGHT' ? 'Getting Ready' :
-                   session?.currentState === 'INTAKE' ? 'Building Connection' :
-                   session?.currentState === 'DESENSITIZATION' ? 'Processing with BLS' :
-                   session?.currentState === 'PIVOT' ? 'Transitioning' :
-                   session?.currentState === 'RECONNECTION' ? 'Open Reconnection' :
-                   session?.currentState === 'INTEGRATION' ? 'Integrating Experience' :
-                   session?.currentState === 'EMERGENCY_GROUNDING' ? 'Emergency Grounding Active' :
-                   session?.currentState || 'Active'}
+            {/* Phase overlay */}
+            <div className="absolute bottom-6 left-6 right-6">
+              <div className="glass-dark rounded-xl p-4">
+                <div className="flex items-center gap-3 mb-2">
+                  <div className={`w-2 h-2 rounded-full ${
+                    isSpeaking ? 'bg-violet-500 animate-pulse' :
+                    isListening ? 'bg-emerald-500 animate-pulse' :
+                    isProcessing ? 'bg-amber-500 animate-pulse' :
+                    blsActive ? 'bg-violet-500 animate-pulse' : 'bg-slate-500'
+                  }`} />
+                  <span className="text-xs text-slate-400 uppercase tracking-wider">
+                    {isSpeaking ? 'Emet is speaking...' :
+                     isListening ? 'Listening...' :
+                     isProcessing ? 'Processing...' :
+                     blsActive ? 'BLS Active' : 'Ready'}
+                  </span>
+                </div>
+                {session?.sessionGoals && (
+                  <p className="text-xs text-slate-500">{session.sessionGoals}</p>
+                )}
+              </div>
+            </div>
+
+            {/* Toggle BLS visibility */}
+            <button
+              onClick={() => setShowBLS(false)}
+              className="absolute top-4 right-4 p-2 rounded-lg bg-white/5 text-slate-400 hover:bg-white/10"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.878 9.878L3 3m6.878 6.878L21 21" />
+              </svg>
+            </button>
+          </div>
+        )}
+
+        {/* Chat / Voice Panel */}
+        <div className={`${showBLS ? 'w-1/2' : 'w-full'} flex flex-col border-l border-white/5`}>
+          {/* Transcript */}
+          <div className="flex-1 overflow-y-auto p-6 space-y-4">
+            {transcripts.length === 0 && (
+              <div className="flex flex-col items-center justify-center h-full text-center">
+                <div className="w-16 h-16 rounded-full bg-violet-500/10 flex items-center justify-center mb-4">
+                  <svg className="w-8 h-8 text-violet-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" />
+                  </svg>
+                </div>
+                <h3 className="text-lg font-medium text-white mb-2">Voice Session</h3>
+                <p className="text-sm text-slate-400 max-w-sm">
+                  {voiceSupported
+                    ? 'The session will begin automatically. Speak naturally — Emet will guide you through the IADC process.'
+                    : 'Voice recognition is not supported in this browser. Use the text input below to communicate.'}
+                </p>
+                {micPermission === 'denied' && (
+                  <p className="text-xs text-red-400 mt-2">Microphone access denied. Please allow microphone access and refresh.</p>
+                )}
+              </div>
+            )}
+
+            {transcripts.map((entry) => (
+              <div key={entry.id} className={`flex flex-col ${entry.speaker === 'CLIENT' ? 'items-end' : 'items-start'}`}>
+                <div className={`max-w-[80%] px-4 py-3 rounded-2xl text-sm leading-relaxed ${
+                  entry.speaker === 'CLIENT' ? 'bg-violet-600/20 text-violet-100 rounded-br-md' :
+                  entry.speaker === 'SYSTEM' ? 'bg-white/5 text-slate-400 text-xs italic' :
+                  'bg-white/10 text-slate-200 rounded-bl-md'
+                }`}>
+                  {entry.content}
+                </div>
+                <span className="text-[10px] text-slate-600 mt-1 px-2">
+                  {entry.speaker === 'CLIENT' ? 'You' : entry.speaker === 'AI_THERAPIST' ? 'Emet' : 'System'} · {entry.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </span>
               </div>
-              {session?.sessionGoals && (
-                <p className="text-xs text-slate-500">{session.sessionGoals}</p>
-              )}
-            </div>
-          </div>
-        </div>
+            ))}
 
-        {/* Chat Panel */}
-        <div className="w-1/2 flex flex-col border-l border-white/5">
-          {/* Transcript */}
-          <div className="flex-1 overflow-y-auto p-6">
-            <TranscriptDisplay
-              entries={transcripts.map((t) => ({
-                ...t,
-                timestamp: new Date(t.timestamp),
-              }))}
-            />
+            {/* Interim text */}
+            {interimText && (
+              <div className="flex flex-col items-end">
+                <div className="max-w-[80%] px-4 py-3 rounded-2xl bg-violet-600/10 text-violet-300/60 text-sm rounded-br-md italic">
+                  {interimText}
+                </div>
+              </div>
+            )}
           </div>
 
-          {/* Input area */}
+          {/* Voice Controls */}
           <div className="border-t border-white/5 p-4">
-            <ChatInput onSend={handleSendMessage} disabled={isEnding} />
+            {/* Status bar */}
+            <div className="flex items-center justify-center gap-4 mb-4">
+              <div className="flex items-center gap-2">
+                <div className={`w-2.5 h-2.5 rounded-full ${
+                  isSpeaking ? 'bg-violet-500 animate-pulse' :
+                  isListening ? 'bg-emerald-500 animate-pulse' :
+                  isProcessing ? 'bg-amber-500 animate-pulse' :
+                  'bg-slate-500'
+                }`} />
+                <span className="text-xs text-slate-400">
+                  {isSpeaking ? 'Emet is speaking...' :
+                   isListening ? 'Listening...' :
+                   isProcessing ? 'Processing...' :
+                   'Ready'}
+                </span>
+              </div>
+            </div>
+
+            {/* Mic button */}
+            {voiceSupported && (
+              <div className="flex justify-center mb-4">
+                <button
+                  onClick={isListening ? stopListening : startVoiceSession}
+                  disabled={isProcessing || isSpeaking}
+                  className={`relative w-16 h-16 rounded-full flex items-center justify-center transition-all ${
+                    isListening
+                      ? 'bg-gradient-to-br from-violet-600 to-fuchsia-600 shadow-lg shadow-violet-500/30 scale-110'
+                      : 'bg-white/5 border border-white/10 hover:bg-white/10 hover:border-violet-500/30'
+                  } disabled:opacity-50 disabled:cursor-not-allowed`}
+                >
+                  {isListening && <div className="absolute inset-0 rounded-full bg-violet-500/20 animate-ping" />}
+                  <svg className={`w-7 h-7 ${isListening ? 'text-white' : 'text-slate-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" />
+                  </svg>
+                </button>
+              </div>
+            )}
+
+            {/* Text input fallback */}
+            <form onSubmit={handleTextSubmit} className="flex items-center gap-3">
+              <input
+                type="text"
+                value={textInput}
+                onChange={(e) => setTextInput(e.target.value)}
+                placeholder={voiceSupported ? 'Or type your message...' : 'Type your message...'}
+                disabled={isProcessing || isSpeaking}
+                className="flex-1 input-emet"
+              />
+              <button
+                type="submit"
+                disabled={!textInput.trim() || isProcessing || isSpeaking}
+                className="p-2.5 rounded-xl bg-violet-600 text-white hover:bg-violet-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                </svg>
+              </button>
+            </form>
+
+            {/* Show BLS button if hidden */}
+            {!showBLS && (
+              <button
+                onClick={() => setShowBLS(true)}
+                className="mt-3 w-full py-2 rounded-lg bg-white/5 text-slate-400 text-xs hover:bg-white/10"
+              >
+                Show BLS Visual
+              </button>
+            )}
           </div>
         </div>
       </div>
     </div>
-  );
-}
-
-function ChatInput({ onSend, disabled }: { onSend: (msg: string) => void; disabled: boolean }) {
-  const [message, setMessage] = useState('');
-  const [isListening, setIsListening] = useState(false);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!message.trim() || disabled) return;
-    onSend(message.trim());
-    setMessage('');
-  };
-
-  const toggleVoice = () => {
-    if (isListening) {
-      setIsListening(false);
-      return;
-    }
-
-    const SpeechRecognitionAPI = (window as unknown as Record<string, unknown>).SpeechRecognition || (window as unknown as Record<string, unknown>).webkitSpeechRecognition;
-    if (!SpeechRecognitionAPI) return;
-
-    const recognition = new (SpeechRecognitionAPI as new () => {
-      lang: string;
-      continuous: boolean;
-      interimResults: boolean;
-      start(): void;
-      stop(): void;
-      onresult: ((event: {
-        resultIndex: number;
-        results: { [i: number]: { isFinal: boolean; [j: number]: { transcript: string } } };
-      }) => void) | null;
-      onerror: (() => void) | null;
-      onend: (() => void) | null;
-    })();
-
-    recognition.lang = 'en-US';
-    recognition.continuous = false;
-    recognition.interimResults = false;
-
-    recognition.onresult = (event) => {
-      const text = event.results[0][0].transcript;
-      setMessage((prev) => prev + text);
-    };
-
-    recognition.onend = () => setIsListening(false);
-    recognition.onerror = () => setIsListening(false);
-
-    recognition.start();
-    setIsListening(true);
-  };
-
-  return (
-    <form onSubmit={handleSubmit} className="flex items-center gap-3">
-      <button
-        type="button"
-        onClick={toggleVoice}
-        className={`p-2.5 rounded-xl transition-all ${
-          isListening
-            ? 'bg-violet-500 text-white animate-pulse'
-            : 'bg-white/5 text-slate-400 hover:bg-white/10'
-        }`}
-      >
-        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-          <path strokeLinecap="round" strokeLinejoin="round" d="M19 10v2a7 7 0 0 1-14 0v-2" />
-          <line x1="12" y1="19" x2="12" y2="23" />
-          <line x1="8" y1="23" x2="16" y2="23" />
-        </svg>
-      </button>
-
-      <input
-        type="text"
-        value={message}
-        onChange={(e) => setMessage(e.target.value)}
-        placeholder="Type your message..."
-        disabled={disabled}
-        className="flex-1 input-emet"
-      />
-
-      <button
-        type="submit"
-        disabled={!message.trim() || disabled}
-        className="p-2.5 rounded-xl bg-violet-600 text-white hover:bg-violet-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-      >
-        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-        </svg>
-      </button>
-    </form>
   );
 }
