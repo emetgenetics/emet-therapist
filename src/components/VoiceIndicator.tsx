@@ -1,7 +1,9 @@
 'use client';
 
+import type { ConnectionState } from '@/lib/realtime';
+
 interface VoiceIndicatorProps {
-  connectionState: 'connecting' | 'connected' | 'disconnected';
+  connectionState: ConnectionState;
   isAiSpeaking: boolean;
   isMicMuted: boolean;
   isBlsActive: boolean;
@@ -13,6 +15,24 @@ export default function VoiceIndicator({
   isMicMuted,
   isBlsActive,
 }: VoiceIndicatorProps) {
+  if (connectionState === 'idle') {
+    return (
+      <div className="flex items-center gap-2 text-gray-500">
+        <div className="w-2 h-2 rounded-full bg-gray-600" />
+        <span className="text-xs">Idle</span>
+      </div>
+    );
+  }
+
+  if (connectionState === 'error') {
+    return (
+      <div className="flex items-center gap-2 text-red-400">
+        <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+        <span className="text-xs">Connection error</span>
+      </div>
+    );
+  }
+
   if (connectionState === 'disconnected') {
     return (
       <div className="flex items-center gap-2 text-gray-500">

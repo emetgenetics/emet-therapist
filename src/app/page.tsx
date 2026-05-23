@@ -3,6 +3,7 @@
 import { useState, useCallback } from 'react';
 import { useSessionStore } from '@/lib/store';
 import { RealtimeClient } from '@/lib/realtime';
+import PasswordGate from '@/components/PasswordGate';
 import PreFlight from '@/components/PreFlight';
 import Session from '@/components/Session';
 
@@ -14,11 +15,15 @@ export default function Home() {
     setClient(realtimeClient);
   }, []);
 
-  // Show session if we have a client connected
-  if (client && phase !== 'PRE_FLIGHT') {
-    return <Session client={client} />;
-  }
+  const app = (
+    <>
+      {client && phase !== 'PRE_FLIGHT' ? (
+        <Session client={client} />
+      ) : (
+        <PreFlight onReady={handlePreFlightReady} />
+      )}
+    </>
+  );
 
-  // Default: show pre-flight
-  return <PreFlight onReady={handlePreFlightReady} />;
+  return <PasswordGate>{app}</PasswordGate>;
 }

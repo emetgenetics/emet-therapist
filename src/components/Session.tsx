@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useSessionStore } from '@/lib/store';
-import { RealtimeClient } from '@/lib/realtime';
+import { RealtimeClient, ConnectionState } from '@/lib/realtime';
 import Lightbar from './Lightbar';
 import AudioPanner from './AudioPanner';
 import VoiceIndicator from './VoiceIndicator';
@@ -41,9 +41,7 @@ export default function Session({ client }: SessionProps) {
     addTranscript,
   } = useSessionStore();
 
-  const [connectionState, setConnectionState] = useState<
-    'connecting' | 'connected' | 'disconnected'
-  >('connecting');
+  const [connectionState, setConnectionState] = useState<ConnectionState>('connecting');
   const [isAiSpeaking, setIsAiSpeaking] = useState(false);
   // Track previous BLS running state to detect stop transitions
   const prevBlsRunningRef = useRef(false);
@@ -105,15 +103,17 @@ export default function Session({ client }: SessionProps) {
         const newState = args.newState as string;
         setPhase(newState as Parameters<typeof setPhase>[0]);
 
-        client.sendEvent({
-          type: 'session.update',
-          session: {
-            instructions: getPromptForState(
-              newState as Parameters<typeof getPromptForState>[0]
-            ),
-          },
-        });
+        // Use setInstructions for live session update
+        client.setInstructions(
+          getPromptForState(
+            newState as Parameters<typeof getPromptForState>[0]
+          )
+        );
       }
+    };
+
+    client.onError = (message) => {
+      console.error('[Session] Realtime error:', message);
     };
 
     // Detect AI speaking via polling remoteAudio element
@@ -134,6 +134,7 @@ export default function Session({ client }: SessionProps) {
       client.onStateChange = null;
       client.onTranscript = null;
       client.onToolCall = null;
+      client.onError = null;
     };
   }, [client, addTranscript, setPhase]);
 
@@ -205,6 +206,8 @@ export default function Session({ client }: SessionProps) {
                   className={`w-3 h-3 rounded-full ${
                     connectionState === 'connected'
                       ? 'bg-violet-500 animate-pulse'
+                      : connectionState === 'error'
+                      ? 'bg-red-500'
                       : 'bg-gray-600'
                   }`}
                 />
@@ -212,6 +215,10 @@ export default function Session({ client }: SessionProps) {
               <p className="text-gray-600 text-sm">
                 {connectionState === 'connected'
                   ? 'Session active'
+                  : connectionState === 'error'
+                  ? 'Connection error'
+                  : connectionState === 'disconnected'
+                  ? 'Disconnected'
                   : 'Connecting...'}
               </p>
             </div>
