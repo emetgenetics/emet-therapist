@@ -6,6 +6,10 @@ import speakeasy from 'speakeasy';
 import prisma from './db';
 import { encrypt } from './encryption';
 
+// Auto-detect NEXTAUTH_URL from Vercel env or fallback to local
+const NEXTAUTH_URL = process.env.NEXTAUTH_URL 
+  || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000');
+
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(prisma) as NextAuthOptions['adapter'],
   providers: [
