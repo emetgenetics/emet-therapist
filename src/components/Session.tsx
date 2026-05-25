@@ -40,7 +40,6 @@ export default function Session({ client }: SessionProps) {
     addTranscript,
   } = useSessionStore();
 
-  // Initialize from client's current state (important: connection may already be established)
   const [connectionState, setConnectionState] = useState<ConnectionState>(
     client.connectionState === 'idle' ? 'connecting' : client.connectionState
   );
@@ -49,14 +48,14 @@ export default function Session({ client }: SessionProps) {
   const prevBlsRunningRef = useRef(false);
   const unmuteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Mic muting sync
+  const isConnected = connectionState === 'ready' || connectionState === 'streaming';
+
   useEffect(() => {
     if (isMicMuted) {
       client.muteMic();
     }
   }, [isMicMuted, client]);
 
-  // BLS stop → delay unmute by 500ms
   useEffect(() => {
     const wasRunning = prevBlsRunningRef.current;
     prevBlsRunningRef.current = bls.isRunning;
@@ -78,36 +77,25 @@ export default function Session({ client }: SessionProps) {
     };
   }, [bls.isRunning, client]);
 
-  // Setup client event handlers
   useEffect(() => {
     client.onStateChange = (state) => {
       setConnectionState(state);
     };
-
     client.onTranscript = (text, speaker) => {
       addTranscript({ speaker, text });
-      if (speaker === 'ai') {
-        setIsAiSpeaking(false);
-      }
+      if (speaker === 'ai') setIsAiSpeaking(false);
     };
-
-    client.onToolCall = (name, args) => {
+    client.onToolCall = (name, args, callId) => {
       if (name === 'transition_state' && args.newState) {
         const newState = args.newState as string;
         setPhase(newState as Parameters<typeof setPhase>[0]);
-        client.setInstructions(
-          getPromptForState(
-            newState as Parameters<typeof getPromptForState>[0]
-          )
-        );
+        client.setInstructions(getPromptForState(newState as Parameters<typeof getPromptForState>[0]));
       }
     };
-
     client.onError = (message) => {
-      console.error('[Session] Gemini error:', message);
+      console.error('[Session] Error:', message);
       setErrorMessage(message);
     };
-
     return () => {
       client.onStateChange = null;
       client.onTranscript = null;
@@ -131,19 +119,15 @@ export default function Session({ client }: SessionProps) {
 
   return (
     <div className="fixed inset-0 bg-black flex flex-col">
-      {/* Top Bar */}
       <div className="flex items-center justify-between px-6 py-4 z-10">
         <div className="flex items-center gap-3">
           <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">
             {PHASE_LABELS[phase] || phase}
           </span>
           {bls.isRunning && (
-            <span className="text-xs text-amber-400/70">
-              {bls.remainingSeconds}s
-            </span>
+            <span className="text-xs text-amber-400/70">{bls.remainingSeconds}s</span>
           )}
         </div>
-
         <div className="flex items-center gap-4">
           <VoiceIndicator
             connectionState={connectionState}
@@ -151,7 +135,6 @@ export default function Session({ client }: SessionProps) {
             isMicMuted={isMicMuted}
             isBlsActive={bls.isRunning}
           />
-
           <button
             onClick={handleEmergency}
             className="w-8 h-8 rounded-full bg-red-500/20 border border-red-500/40 flex items-center justify-center hover:bg-red-500/30 transition-colors"
@@ -162,40 +145,27 @@ export default function Session({ client }: SessionProps) {
         </div>
       </div>
 
-      {/* Center */}
       <div className="flex-1 relative">
         {bls.isRunning && (
           <div className="absolute inset-0">
-            <Lightbar
-              isRunning={bls.isRunning}
-              speedHz={bls.speedHz}
-              color={bls.color}
-            />
+            <Lightbar isRunning={bls.isRunning} speedHz={bls.speedHz} color={bls.color} />
           </div>
         )}
-
         {!bls.isRunning && (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="text-center">
               <div className="w-16 h-16 rounded-full border border-gray-800 flex items-center justify-center mx-auto mb-4">
-                <div
-                  className={`w-3 h-3 rounded-full ${
-                    connectionState === 'connected'
-                      ? 'bg-violet-500 animate-pulse'
-                      : connectionState === 'error'
-                      ? 'bg-red-500'
-                      : 'bg-gray-600'
-                  }`}
-                />
+                <div className={`w-3 h-3 rounded-full ${
+                  isConnected ? 'bg-violet-500 animate-pulse'
+                  : connectionState === 'error' ? 'bg-red-500'
+                  : 'bg-gray-600'
+                }`} />
               </div>
               <p className="text-gray-600 text-sm">
-                {connectionState === 'connected'
-                  ? 'Session active'
-                  : connectionState === 'error'
-                  ? 'Connection error'
-                  : connectionState === 'disconnected'
-                  ? 'Disconnected'
-                  : 'Connecting...'}
+                {isConnected ? 'Session active'
+                : connectionState === 'error' ? 'Connection error'
+                : connectionState === 'disconnected' ? 'Disconnected'
+                : 'Connecting...'}
               </p>
               {errorMessage && (
                 <p className="text-red-400 text-xs mt-2 max-w-xs mx-auto">{errorMessage}</p>
@@ -205,28 +175,17 @@ export default function Session({ client }: SessionProps) {
         )}
       </div>
 
-      {/* Bottom Bar */}
       <div className="flex items-center justify-between px-6 py-4 z-10">
-        <button
-          onClick={handleEndSession}
-          className="text-xs text-gray-600 hover:text-gray-400 transition-colors"
-        >
+        <button onClick={handleEndSession} className="text-xs text-gray-600 hover:text-gray-400 transition-colors">
           End Session
         </button>
-
         <div className="flex items-center gap-2">
-          {isMicMuted && (
-            <span className="text-xs text-amber-400/60">Mic muted</span>
-          )}
+          {isMicMuted && <span className="text-xs text-amber-400/60">Mic muted</span>}
         </div>
       </div>
 
       {bls.isRunning && (
-        <AudioPanner
-          isRunning={bls.isRunning}
-          speedHz={bls.speedHz}
-          frequency={COLOR_FREQ[bls.color] || 440}
-        />
+        <AudioPanner isRunning={bls.isRunning} speedHz={bls.speedHz} frequency={COLOR_FREQ[bls.color] || 440} />
       )}
     </div>
   );
