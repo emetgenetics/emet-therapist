@@ -7,10 +7,9 @@ export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'disconnecte
 const GEMINI_MODEL = 'models/gemini-3.1-flash-live-preview';
 const INPUT_SAMPLE_RATE = 16000;
 const OUTPUT_SAMPLE_RATE = 24000;
-// ScriptProcessorNode requires power-of-2 buffer sizes (256, 512, 1024, 2048, 4096, 8192, 16384)
-// Use 2048 samples = 128ms at 16kHz — close to 100ms target
+// ScriptProcessorNode requires power-of-2 buffer sizes
 const PROCESSOR_BUFFER_SIZE = 2048;
-const SEND_INTERVAL_MS = 100; // send audio every 100ms
+const SEND_INTERVAL_MS = 100;
 const SEND_SAMPLES = INPUT_SAMPLE_RATE * (SEND_INTERVAL_MS / 1000); // 1600 samples
 
 function float32ToInt16(float32Array: Float32Array): Int16Array {
@@ -41,9 +40,7 @@ export class GeminiLiveClient {
   playbackQueue: AudioBufferSourceNode[] = [];
   isMicMuted = false;
 
-  // Audio accumulation buffer for sending at correct intervals
   private audioBuffer: Float32Array = new Float32Array(0);
-  private lastSendTime = 0;
 
   onToolCall:
     | ((name: string, args: Record<string, unknown>) => void)
@@ -105,10 +102,14 @@ export class GeminiLiveClient {
             clearTimeout(timeout);
             let reason = event.reason || 'Unknown';
             if (event.code === 1006) reason = 'Connection refused or network error';
-            if (event.code === 4000) reason = 'Bad request — check model name or API key';
+            if (event.code === 1007) reason = 'Invalid message format — check API protocol';
             reject(new Error(`WebSocket closed (${event.code}): ${reason}`));
           } else {
+            // Connection was established but then closed
             this.onStateChange?.('disconnected');
+            if (event.code !== 1000) {
+              this.onError?.(`Connection lost (${event.code}): ${event.reason || 'Unknown'}`);
+            }
           }
         };
       });
@@ -168,7 +169,6 @@ export class GeminiLiveClient {
     this.audioCtx = new AudioContext({ sampleRate: INPUT_SAMPLE_RATE });
     this.sourceNode = this.audioCtx.createMediaStreamSource(this.micStream);
 
-    // Use power-of-2 buffer size (required by ScriptProcessorNode)
     const processor = this.audioCtx.createScriptProcessor(PROCESSOR_BUFFER_SIZE, 1, 1);
 
     processor.onaudioprocess = (e) => {
@@ -185,7 +185,6 @@ export class GeminiLiveClient {
       this.audioBuffer = newBuffer;
 
       // Send when we have enough samples (1600 = 100ms at 16kHz)
-      const now = performance.now();
       while (this.audioBuffer.length >= SEND_SAMPLES) {
         const chunk = this.audioBuffer.slice(0, SEND_SAMPLES);
         this.audioBuffer = this.audioBuffer.slice(SEND_SAMPLES);
@@ -193,15 +192,14 @@ export class GeminiLiveClient {
         const pcmData = float32ToInt16(chunk);
         const base64 = int16ArrayToBase64(pcmData);
 
+        // New Gemini Live API format: use realtimeInput.audio instead of mediaChunks
         this.ws.send(
           JSON.stringify({
             realtimeInput: {
-              mediaChunks: [
-                {
-                  mimeType: 'audio/pcm;rate=16000',
-                  data: base64,
-                },
-              ],
+              audio: {
+                mimeType: 'audio/pcm;rate=16000',
+                data: base64,
+              },
             },
           })
         );
