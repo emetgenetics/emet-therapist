@@ -2,7 +2,7 @@
 
 import { useState, useRef, useCallback } from 'react';
 import { useSessionStore } from '@/lib/store';
-import { GeminiLiveClient } from '@/lib/gemini-live';
+import { GeminiLiveClient, ConnectionState } from '@/lib/gemini-live';
 
 interface PreFlightProps {
   onReady: (client: GeminiLiveClient) => void;
@@ -74,9 +74,19 @@ export default function PreFlight({ onReady }: PreFlightProps) {
 
     try {
       const client = new GeminiLiveClient();
+
+      // Set onStateChange BEFORE connecting so we don't miss the 'connected' event
+      client.onStateChange = (state: ConnectionState) => {
+        console.log('[PreFlight] Connection state:', state);
+        if (state === 'connected') {
+          setPhase('INTAKE');
+          onReady(client);
+        } else if (state === 'error') {
+          setConnecting(false);
+        }
+      };
+
       await client.connect();
-      setPhase('INTAKE');
-      onReady(client);
     } catch (err) {
       setConnecting(false);
       alert(
