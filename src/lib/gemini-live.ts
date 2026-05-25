@@ -33,6 +33,7 @@ export class GeminiLiveClient {
   private audioBuffer: Float32Array = new Float32Array(0);
   private currentInstructions = '';
   private connectionResolved = false;
+  private pendingAudioChunks: Uint8Array[] = [];
 
   onToolCall: ((name: string, args: Record<string, unknown>, callId: string) => void) | null = null;
   onTranscript: ((text: string, speaker: 'ai' | 'user') => void) | null = null;
@@ -91,7 +92,7 @@ export class GeminiLiveClient {
         };
       });
 
-      // ALL messages from Gemini are JSON text — audio is base64 inside JSON
+      // CRITICAL: Handle BOTH text (JSON) and binary (protobuf audio) messages
       this.ws.onmessage = (event) => {
         if (typeof event.data === 'string') {
           try {
@@ -99,8 +100,9 @@ export class GeminiLiveClient {
           } catch (e) {
             console.error('[GeminiLive] JSON parse error:', e);
           }
-        } else {
-          console.warn('[GeminiLive] Unexpected binary message');
+        } else if (event.data instanceof ArrayBuffer || event.data instanceof Blob) {
+          // Gemini sends audio as binary protobuf frames
+          this.handleBinaryMessage(event.data);
         }
       };
 
@@ -134,26 +136,26 @@ export class GeminiLiveClient {
 
   private handleJsonMessage(msg: any) {
     const msgType = Object.keys(msg)[0];
-    console.log('[GeminiLive] JSON type:', msgType);
+    console.log('[GeminiLive] JSON type:', msgType, msg);
 
     if (msg.setupComplete) {
       console.log('[GeminiLive] Setup confirmed → ready');
       this.setState('ready');
-      this.sendClientContent('Begin the IADC session. Introduce yourself briefly and ask me to think about the person I have lost.');
+      // CRITICAL: Send initial prompt to trigger AI response
+      setTimeout(() => {
+        this.sendClientContent('Begin the IADC session. Introduce yourself briefly and ask me to think about the person I have lost.');
+      }, 500);
     }
 
     if (msg.serverContent?.modelTurn?.parts) {
       if (this.connectionState === 'ready') this.setState('streaming');
       for (const part of msg.serverContent.modelTurn.parts) {
-        if (part.inlineData?.mimeType?.startsWith('audio/')) {
-          const binary = Uint8Array.from(atob(part.inlineData.data), c => c.charCodeAt(0));
-          console.log('[GeminiLive] Audio part:', binary.length, 'bytes');
-          this.playAudioChunk(binary);
-        }
+        // Text transcript (if any)
         if (part.text) {
-          console.log('[GeminiLive] AI:', part.text);
+          console.log('[GeminiLive] AI text:', part.text);
           this.onTranscript?.(part.text, 'ai');
         }
+        // Note: Gemini Live sends audio as BINARY, not inlineData in JSON
       }
     }
 
@@ -166,7 +168,9 @@ export class GeminiLiveClient {
     }
 
     if (msg.serverContent?.interrupted) {
+      console.log('[GeminiLive] Interrupted');
       this.nextPlayTime = 0;
+      this.pendingAudioChunks = [];
     }
 
     if (msg.toolCall?.functionCalls) {
@@ -190,11 +194,33 @@ export class GeminiLiveClient {
     }
   }
 
+  // CRITICAL NEW METHOD: Handle binary protobuf audio frames
+  private async handleBinaryMessage(data: ArrayBuffer | Blob) {
+    try {
+      let bytes: Uint8Array;
+      if (data instanceof Blob) {
+        bytes = new Uint8Array(await data.arrayBuffer());
+      } else {
+        bytes = new Uint8Array(data);
+      }
+
+      console.log('[GeminiLive] Binary audio chunk:', bytes.length, 'bytes');
+
+      // Gemini sends audio as raw PCM16 in protobuf frames
+      if (bytes.length >= 2) {
+        this.playAudioChunk(bytes);
+      }
+    } catch (error: any) {
+      console.error('[GeminiLive] Binary parse error:', error.message);
+    }
+  }
+
   private sendClientContent(text: string) {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({
         clientContent: { turns: [{ role: 'user', parts: [{ text }] }], turnComplete: true },
       }));
+      console.log('[GeminiLive] Sent clientContent:', text.substring(0, 50));
     }
   }
 
@@ -204,11 +230,19 @@ export class GeminiLiveClient {
         this.playbackCtx = new AudioContext({ sampleRate: OUTPUT_SAMPLE_RATE });
         this.nextPlayTime = 0;
       }
-      if (this.playbackCtx.state === 'suspended') this.playbackCtx.resume();
+      if (this.playbackCtx.state === 'suspended') {
+        this.playbackCtx.resume();
+      }
 
-      const pcm16 = new Int16Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 2);
+      // Convert Uint8Array to Int16Array (PCM16 little-endian)
+      const pcm16 = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 2));
+
+      if (pcm16.length === 0) return;
+
       const float32 = new Float32Array(pcm16.length);
-      for (let i = 0; i < pcm16.length; i++) float32[i] = pcm16[i] / 32768.0;
+      for (let i = 0; i < pcm16.length; i++) {
+        float32[i] = pcm16[i] / 32768.0;
+      }
 
       const buffer = this.playbackCtx.createBuffer(1, float32.length, OUTPUT_SAMPLE_RATE);
       buffer.getChannelData(0).set(float32);
@@ -221,6 +255,10 @@ export class GeminiLiveClient {
       if (this.nextPlayTime < now) this.nextPlayTime = now;
       source.start(this.nextPlayTime);
       this.nextPlayTime += buffer.duration;
+
+      if (this.connectionState === 'ready') {
+        this.setState('streaming');
+      }
     } catch (error: any) {
       console.error('[GeminiLive] Playback error:', error.message);
     }
@@ -280,6 +318,7 @@ export class GeminiLiveClient {
     console.log('[GeminiLive] Disconnecting...');
     this.audioBuffer = new Float32Array(0);
     this.nextPlayTime = 0;
+    this.pendingAudioChunks = [];
     if (this.micStream) { this.micStream.getTracks().forEach(t => t.stop()); this.micStream = null; }
     if (this.audioCtx) { this.audioCtx.close().catch(() => {}); this.audioCtx = null; }
     if (this.playbackCtx) { this.playbackCtx.close().catch(() => {}); this.playbackCtx = null; }
