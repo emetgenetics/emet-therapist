@@ -33,7 +33,6 @@ export class GeminiLiveClient {
   private audioBuffer: Float32Array = new Float32Array(0);
   private currentInstructions = '';
   private connectionResolved = false;
-  private pendingAudioChunks: Uint8Array[] = [];
 
   onToolCall: ((name: string, args: Record<string, unknown>, callId: string) => void) | null = null;
   onTranscript: ((text: string, speaker: 'ai' | 'user') => void) | null = null;
@@ -92,7 +91,7 @@ export class GeminiLiveClient {
         };
       });
 
-      // CRITICAL: Handle BOTH text (JSON) and binary (protobuf audio) messages
+      // Handle BOTH text (JSON) and binary (protobuf audio) messages
       this.ws.onmessage = (event) => {
         if (typeof event.data === 'string') {
           try {
@@ -101,7 +100,6 @@ export class GeminiLiveClient {
             console.error('[GeminiLive] JSON parse error:', e);
           }
         } else if (event.data instanceof ArrayBuffer || event.data instanceof Blob) {
-          // Gemini sends audio as binary protobuf frames
           this.handleBinaryMessage(event.data);
         }
       };
@@ -135,27 +133,31 @@ export class GeminiLiveClient {
   }
 
   private handleJsonMessage(msg: any) {
-    const msgType = Object.keys(msg)[0];
-    console.log('[GeminiLive] JSON type:', msgType, msg);
+    // AGGRESSIVE LOGGING — log everything
+    const msgStr = JSON.stringify(msg);
+    console.log('[GeminiLive] RAW JSON:', msgStr.substring(0, 800));
 
-    if (msg.setupComplete) {
-      console.log('[GeminiLive] Setup confirmed → ready');
+    // Check ALL possible message types
+    if (msg.setupComplete !== undefined) {
+      console.log('[GeminiLive] ✅ setupComplete detected');
       this.setState('ready');
-      // CRITICAL: Send initial prompt to trigger AI response
       setTimeout(() => {
         this.sendClientContent('Begin the IADC session. Introduce yourself briefly and ask me to think about the person I have lost.');
       }, 500);
+      return;
     }
 
     if (msg.serverContent?.modelTurn?.parts) {
-      if (this.connectionState === 'ready') this.setState('streaming');
+      console.log('[GeminiLive] modelTurn parts:', msg.serverContent.modelTurn.parts.length);
+      if (this.connectionState === 'ready' || this.connectionState === 'awaiting_setup') {
+        this.setState('streaming');
+      }
       for (const part of msg.serverContent.modelTurn.parts) {
-        // Text transcript (if any)
         if (part.text) {
-          console.log('[GeminiLive] AI text:', part.text);
+          console.log('[GeminiLive] AI TEXT:', part.text);
           this.onTranscript?.(part.text, 'ai');
         }
-        // Note: Gemini Live sends audio as BINARY, not inlineData in JSON
+        // Audio comes via binary frames, not inlineData
       }
     }
 
@@ -163,18 +165,20 @@ export class GeminiLiveClient {
       this.onTranscript?.(msg.serverContent.inputTranscription.text, 'user');
     }
 
-    if (msg.serverContent?.turnComplete && this.connectionState === 'streaming') {
-      this.setState('ready');
+    if (msg.serverContent?.turnComplete) {
+      console.log('[GeminiLive] Turn complete');
+      if (this.connectionState === 'streaming') this.setState('ready');
     }
 
     if (msg.serverContent?.interrupted) {
       console.log('[GeminiLive] Interrupted');
       this.nextPlayTime = 0;
-      this.pendingAudioChunks = [];
     }
 
     if (msg.toolCall?.functionCalls) {
+      console.log('[GeminiLive] Tool calls:', msg.toolCall.functionCalls.length);
       for (const call of msg.toolCall.functionCalls) {
+        console.log('[GeminiLive] Tool:', call.name, JSON.stringify(call.args));
         const result = executeTool(call.name, call.args || {});
         this.onToolCall?.(call.name, call.args || {}, call.id);
         if (this.ws?.readyState === WebSocket.OPEN) {
@@ -188,13 +192,12 @@ export class GeminiLiveClient {
     }
 
     if (msg.error) {
-      console.error('[GeminiLive] Server error:', msg.error);
-      this.onError?.(msg.error.message || 'Server error');
+      console.error('[GeminiLive] ❌ SERVER ERROR:', JSON.stringify(msg.error));
+      this.onError?.(msg.error.message || JSON.stringify(msg.error));
       this.setState('error');
     }
   }
 
-  // CRITICAL NEW METHOD: Handle binary protobuf audio frames
   private async handleBinaryMessage(data: ArrayBuffer | Blob) {
     try {
       let bytes: Uint8Array;
@@ -203,15 +206,12 @@ export class GeminiLiveClient {
       } else {
         bytes = new Uint8Array(data);
       }
-
       console.log('[GeminiLive] Binary audio chunk:', bytes.length, 'bytes');
-
-      // Gemini sends audio as raw PCM16 in protobuf frames
       if (bytes.length >= 2) {
         this.playAudioChunk(bytes);
       }
     } catch (error: any) {
-      console.error('[GeminiLive] Binary parse error:', error.message);
+      console.error('[GeminiLive] Binary error:', error.message);
     }
   }
 
@@ -220,7 +220,7 @@ export class GeminiLiveClient {
       this.ws.send(JSON.stringify({
         clientContent: { turns: [{ role: 'user', parts: [{ text }] }], turnComplete: true },
       }));
-      console.log('[GeminiLive] Sent clientContent:', text.substring(0, 50));
+      console.log('[GeminiLive] Sent clientContent:', text.substring(0, 60));
     }
   }
 
@@ -234,9 +234,7 @@ export class GeminiLiveClient {
         this.playbackCtx.resume();
       }
 
-      // Convert Uint8Array to Int16Array (PCM16 little-endian)
       const pcm16 = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 2));
-
       if (pcm16.length === 0) return;
 
       const float32 = new Float32Array(pcm16.length);
@@ -256,7 +254,7 @@ export class GeminiLiveClient {
       source.start(this.nextPlayTime);
       this.nextPlayTime += buffer.duration;
 
-      if (this.connectionState === 'ready') {
+      if (this.connectionState !== 'streaming') {
         this.setState('streaming');
       }
     } catch (error: any) {
@@ -306,19 +304,20 @@ export class GeminiLiveClient {
     };
 
     this.sourceNode.connect(processor);
-    processor.connect(this.audioCtx.destination);
+    // CRITICAL: Do NOT connect processor to destination — prevents feedback loop
+    // processor.connect(this.audioCtx.destination);  // REMOVED
     this.processorNode = processor;
-    console.log('[GeminiLive] Capture ready (mic:', micRate, '→ 16kHz)');
+
+    console.log('[GeminiLive] Capture ready (mic:', micRate, '→ 16kHz, no local playback)');
   }
 
-  muteMic() { this.isMicMuted = true; }
-  unmuteMic() { this.isMicMuted = false; }
+  muteMic() { this.isMicMuted = true; console.log('[GeminiLive] Mic muted'); }
+  unmuteMic() { this.isMicMuted = false; console.log('[GeminiLive] Mic unmuted'); }
 
   disconnect() {
     console.log('[GeminiLive] Disconnecting...');
     this.audioBuffer = new Float32Array(0);
     this.nextPlayTime = 0;
-    this.pendingAudioChunks = [];
     if (this.micStream) { this.micStream.getTracks().forEach(t => t.stop()); this.micStream = null; }
     if (this.audioCtx) { this.audioCtx.close().catch(() => {}); this.audioCtx = null; }
     if (this.playbackCtx) { this.playbackCtx.close().catch(() => {}); this.playbackCtx = null; }
