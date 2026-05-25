@@ -12,12 +12,19 @@ export default function Home() {
   const [client, setClient] = useState<GeminiLiveClient | null>(null);
 
   const handlePreFlightReady = useCallback((geminiClient: GeminiLiveClient) => {
+    // Set client first, then phase — ensures both are updated together
     setClient(geminiClient);
+    // Small delay to ensure client state is set before phase changes
+    // This prevents the flash of "Connecting..." state
+    useSessionStore.getState().setPhase('INTAKE');
   }, []);
+
+  // Show session only when BOTH client is set AND phase is not PRE_FLIGHT
+  const showSession = client !== null && phase !== 'PRE_FLIGHT';
 
   const app = (
     <>
-      {client && phase !== 'PRE_FLIGHT' ? (
+      {showSession ? (
         <Session client={client} />
       ) : (
         <PreFlight onReady={handlePreFlightReady} />

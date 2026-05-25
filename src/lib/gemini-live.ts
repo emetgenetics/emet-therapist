@@ -7,10 +7,9 @@ export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'disconnecte
 const GEMINI_MODEL = 'models/gemini-3.1-flash-live-preview';
 const INPUT_SAMPLE_RATE = 16000;
 const OUTPUT_SAMPLE_RATE = 24000;
-// ScriptProcessorNode requires power-of-2 buffer sizes
 const PROCESSOR_BUFFER_SIZE = 2048;
 const SEND_INTERVAL_MS = 100;
-const SEND_SAMPLES = INPUT_SAMPLE_RATE * (SEND_INTERVAL_MS / 1000); // 1600 samples
+const SEND_SAMPLES = INPUT_SAMPLE_RATE * (SEND_INTERVAL_MS / 1000);
 
 function float32ToInt16(float32Array: Float32Array): Int16Array {
   const int16Array = new Int16Array(float32Array.length);
@@ -39,6 +38,7 @@ export class GeminiLiveClient {
   playbackCtx: AudioContext | null = null;
   playbackQueue: AudioBufferSourceNode[] = [];
   isMicMuted = false;
+  connectionState: ConnectionState = 'idle';
 
   private audioBuffer: Float32Array = new Float32Array(0);
 
@@ -58,9 +58,14 @@ export class GeminiLiveClient {
     this.currentInstructions = instructions;
   }
 
+  private setState(state: ConnectionState) {
+    this.connectionState = state;
+    this.onStateChange?.(state);
+  }
+
   async connect() {
     try {
-      this.onStateChange?.('connecting');
+      this.setState('connecting');
       this.connectionResolved = false;
 
       const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
@@ -105,8 +110,7 @@ export class GeminiLiveClient {
             if (event.code === 1007) reason = 'Invalid message format — check API protocol';
             reject(new Error(`WebSocket closed (${event.code}): ${reason}`));
           } else {
-            // Connection was established but then closed
-            this.onStateChange?.('disconnected');
+            this.setState('disconnected');
             if (event.code !== 1000) {
               this.onError?.(`Connection lost (${event.code}): ${event.reason || 'Unknown'}`);
             }
@@ -148,10 +152,10 @@ export class GeminiLiveClient {
       // Initialize audio capture
       await this.initAudioCapture();
 
-      this.onStateChange?.('connected');
+      this.setState('connected');
     } catch (error: any) {
       console.error('[GeminiLive] Connection failed:', error?.message || error);
-      this.onStateChange?.('error');
+      this.setState('error');
       this.onError?.(error?.message || 'Connection failed');
       this.disconnect();
     }
@@ -192,7 +196,6 @@ export class GeminiLiveClient {
         const pcmData = float32ToInt16(chunk);
         const base64 = int16ArrayToBase64(pcmData);
 
-        // New Gemini Live API format: use realtimeInput.audio instead of mediaChunks
         this.ws.send(
           JSON.stringify({
             realtimeInput: {
@@ -220,8 +223,16 @@ export class GeminiLiveClient {
       if (typeof event.data === 'string') {
         data = JSON.parse(event.data);
       } else {
-        console.log('[GeminiLive] Received binary data, length:', event.data.byteLength);
-        return;
+        // Binary data from Gemini — could be audio
+        // Try to parse as JSON first (some messages come as ArrayBuffer)
+        try {
+          const text = new TextDecoder().decode(event.data);
+          data = JSON.parse(text);
+        } catch {
+          // Truly binary — skip for now
+          console.log('[GeminiLive] Received binary data, length:', event.data.byteLength);
+          return;
+        }
       }
 
       console.log('[GeminiLive] Event:', Object.keys(data).join(', '));
@@ -403,6 +414,6 @@ export class GeminiLiveClient {
       this.ws = null;
     }
 
-    this.onStateChange?.('disconnected');
+    this.setState('disconnected');
   }
 }

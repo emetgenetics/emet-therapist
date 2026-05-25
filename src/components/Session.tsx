@@ -40,20 +40,23 @@ export default function Session({ client }: SessionProps) {
     addTranscript,
   } = useSessionStore();
 
-  const [connectionState, setConnectionState] = useState<ConnectionState>('connecting');
+  // Initialize from client's current state (important: connection may already be established)
+  const [connectionState, setConnectionState] = useState<ConnectionState>(
+    client.connectionState === 'idle' ? 'connecting' : client.connectionState
+  );
   const [isAiSpeaking, setIsAiSpeaking] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const prevBlsRunningRef = useRef(false);
   const unmuteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Mic muting sync — CRITICAL: mic MUST mute during BLS
+  // Mic muting sync
   useEffect(() => {
     if (isMicMuted) {
       client.muteMic();
     }
   }, [isMicMuted, client]);
 
-  // Detect BLS stop → delay unmute by 500ms to match AudioPanner fade-out
+  // BLS stop → delay unmute by 500ms
   useEffect(() => {
     const wasRunning = prevBlsRunningRef.current;
     prevBlsRunningRef.current = bls.isRunning;
@@ -159,7 +162,7 @@ export default function Session({ client }: SessionProps) {
         </div>
       </div>
 
-      {/* Center: Lightbar or Status */}
+      {/* Center */}
       <div className="flex-1 relative">
         {bls.isRunning && (
           <div className="absolute inset-0">
@@ -218,7 +221,6 @@ export default function Session({ client }: SessionProps) {
         </div>
       </div>
 
-      {/* Audio Panner */}
       {bls.isRunning && (
         <AudioPanner
           isRunning={bls.isRunning}
