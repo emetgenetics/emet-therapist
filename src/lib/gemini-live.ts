@@ -4,7 +4,7 @@ import { useSessionStore } from './store';
 
 export type ConnectionState = 'idle' | 'connecting' | 'awaiting_setup' | 'ready' | 'streaming' | 'disconnected' | 'error';
 
-const GEMINI_MODEL = 'models/gemini-3.1-flash-live-preview';
+const GEMINI_MODEL = 'gemini-3.1-flash-live-preview';
 const INPUT_SAMPLE_RATE = 16000;
 const OUTPUT_SAMPLE_RATE = 24000;
 const PROCESSOR_BUFFER_SIZE = 2048;
@@ -57,7 +57,8 @@ export class GeminiLiveClient {
       const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
       if (!apiKey) throw new Error('NEXT_PUBLIC_GEMINI_API_KEY missing');
 
-      const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${apiKey}`;
+      // FIX: Use v1beta, not v1alpha
+      const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${apiKey}`;
       console.log('[GeminiLive] Connecting...');
       this.ws = new WebSocket(wsUrl);
 
@@ -91,36 +92,54 @@ export class GeminiLiveClient {
         };
       });
 
-      // Handle BOTH text (JSON) and binary (protobuf audio) messages
-      this.ws.onmessage = (event) => {
-        if (typeof event.data === 'string') {
-          try {
-            this.handleJsonMessage(JSON.parse(event.data));
-          } catch (e) {
-            console.error('[GeminiLive] JSON parse error:', e);
-          }
-        } else if (event.data instanceof ArrayBuffer || event.data instanceof Blob) {
-          this.handleBinaryMessage(event.data);
-        }
-      };
-
-      // Send setup
+      // FIX: Use "config" not "setup", correct structure
       const currentPhase = useSessionStore.getState().phase;
       const instructions = this.currentInstructions || getPromptForState(currentPhase);
 
-      this.ws.send(JSON.stringify({
-        setup: {
-          model: GEMINI_MODEL,
-          generationConfig: {
-            responseModalities: ['AUDIO'],
-            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
+      const configMessage = {
+        config: {
+          model: `models/${GEMINI_MODEL}`,
+          responseModalities: ['AUDIO'],
+          systemInstruction: {
+            parts: [{ text: instructions }]
           },
-          systemInstruction: { parts: [{ text: instructions }] },
-          tools: { functionDeclarations: TOOL_SCHEMAS },
-        },
-      }));
-      console.log('[GeminiLive] Setup sent');
+          generationConfig: {
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: {
+                  voiceName: 'Puck'
+                }
+              }
+            }
+          },
+          tools: [
+            {
+              functionDeclarations: TOOL_SCHEMAS
+            }
+          ]
+        }
+      };
+
+      this.ws.send(JSON.stringify(configMessage));
+      console.log('[GeminiLive] Config sent:', JSON.stringify(configMessage).substring(0, 200));
       this.setState('awaiting_setup');
+
+      // Handle messages
+      this.ws.onmessage = (event) => {
+        if (typeof event.data === 'string') {
+          try {
+            const msg = JSON.parse(event.data);
+            console.log('[GeminiLive] Received:', JSON.stringify(msg).substring(0, 500));
+            this.handleJsonMessage(msg);
+          } catch (e) {
+            console.error('[GeminiLive] JSON parse error:', e);
+          }
+        } else {
+          // Binary messages — log size, likely keepalive not audio
+          const size = event.data instanceof ArrayBuffer ? event.data.byteLength : event.data.size;
+          console.log('[GeminiLive] Binary:', size, 'bytes');
+        }
+      };
 
       await this.initAudioCapture();
 
@@ -133,13 +152,8 @@ export class GeminiLiveClient {
   }
 
   private handleJsonMessage(msg: any) {
-    // AGGRESSIVE LOGGING — log everything
-    const msgStr = JSON.stringify(msg);
-    console.log('[GeminiLive] RAW JSON:', msgStr.substring(0, 800));
-
-    // Check ALL possible message types
     if (msg.setupComplete !== undefined) {
-      console.log('[GeminiLive] ✅ setupComplete detected');
+      console.log('[GeminiLive] ✅ Setup confirmed');
       this.setState('ready');
       setTimeout(() => {
         this.sendClientContent('Begin the IADC session. Introduce yourself briefly and ask me to think about the person I have lost.');
@@ -148,16 +162,20 @@ export class GeminiLiveClient {
     }
 
     if (msg.serverContent?.modelTurn?.parts) {
-      console.log('[GeminiLive] modelTurn parts:', msg.serverContent.modelTurn.parts.length);
       if (this.connectionState === 'ready' || this.connectionState === 'awaiting_setup') {
         this.setState('streaming');
       }
       for (const part of msg.serverContent.modelTurn.parts) {
         if (part.text) {
-          console.log('[GeminiLive] AI TEXT:', part.text);
+          console.log('[GeminiLive] AI:', part.text);
           this.onTranscript?.(part.text, 'ai');
         }
-        // Audio comes via binary frames, not inlineData
+        // Audio arrives as base64 inlineData in JSON for this model
+        if (part.inlineData?.data && part.inlineData?.mimeType?.startsWith('audio/')) {
+          const binary = Uint8Array.from(atob(part.inlineData.data), c => c.charCodeAt(0));
+          console.log('[GeminiLive] Audio part:', binary.length, 'bytes');
+          this.playAudioChunk(binary);
+        }
       }
     }
 
@@ -165,20 +183,16 @@ export class GeminiLiveClient {
       this.onTranscript?.(msg.serverContent.inputTranscription.text, 'user');
     }
 
-    if (msg.serverContent?.turnComplete) {
-      console.log('[GeminiLive] Turn complete');
-      if (this.connectionState === 'streaming') this.setState('ready');
+    if (msg.serverContent?.turnComplete && this.connectionState === 'streaming') {
+      this.setState('ready');
     }
 
     if (msg.serverContent?.interrupted) {
-      console.log('[GeminiLive] Interrupted');
       this.nextPlayTime = 0;
     }
 
     if (msg.toolCall?.functionCalls) {
-      console.log('[GeminiLive] Tool calls:', msg.toolCall.functionCalls.length);
       for (const call of msg.toolCall.functionCalls) {
-        console.log('[GeminiLive] Tool:', call.name, JSON.stringify(call.args));
         const result = executeTool(call.name, call.args || {});
         this.onToolCall?.(call.name, call.args || {}, call.id);
         if (this.ws?.readyState === WebSocket.OPEN) {
@@ -192,26 +206,9 @@ export class GeminiLiveClient {
     }
 
     if (msg.error) {
-      console.error('[GeminiLive] ❌ SERVER ERROR:', JSON.stringify(msg.error));
+      console.error('[GeminiLive] ❌ Server error:', JSON.stringify(msg.error));
       this.onError?.(msg.error.message || JSON.stringify(msg.error));
       this.setState('error');
-    }
-  }
-
-  private async handleBinaryMessage(data: ArrayBuffer | Blob) {
-    try {
-      let bytes: Uint8Array;
-      if (data instanceof Blob) {
-        bytes = new Uint8Array(await data.arrayBuffer());
-      } else {
-        bytes = new Uint8Array(data);
-      }
-      console.log('[GeminiLive] Binary audio chunk:', bytes.length, 'bytes');
-      if (bytes.length >= 2) {
-        this.playAudioChunk(bytes);
-      }
-    } catch (error: any) {
-      console.error('[GeminiLive] Binary error:', error.message);
     }
   }
 
@@ -220,7 +217,7 @@ export class GeminiLiveClient {
       this.ws.send(JSON.stringify({
         clientContent: { turns: [{ role: 'user', parts: [{ text }] }], turnComplete: true },
       }));
-      console.log('[GeminiLive] Sent clientContent:', text.substring(0, 60));
+      console.log('[GeminiLive] Sent:', text.substring(0, 60));
     }
   }
 
@@ -230,17 +227,13 @@ export class GeminiLiveClient {
         this.playbackCtx = new AudioContext({ sampleRate: OUTPUT_SAMPLE_RATE });
         this.nextPlayTime = 0;
       }
-      if (this.playbackCtx.state === 'suspended') {
-        this.playbackCtx.resume();
-      }
+      if (this.playbackCtx.state === 'suspended') this.playbackCtx.resume();
 
       const pcm16 = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 2));
       if (pcm16.length === 0) return;
 
       const float32 = new Float32Array(pcm16.length);
-      for (let i = 0; i < pcm16.length; i++) {
-        float32[i] = pcm16[i] / 32768.0;
-      }
+      for (let i = 0; i < pcm16.length; i++) float32[i] = pcm16[i] / 32768.0;
 
       const buffer = this.playbackCtx.createBuffer(1, float32.length, OUTPUT_SAMPLE_RATE);
       buffer.getChannelData(0).set(float32);
@@ -253,10 +246,6 @@ export class GeminiLiveClient {
       if (this.nextPlayTime < now) this.nextPlayTime = now;
       source.start(this.nextPlayTime);
       this.nextPlayTime += buffer.duration;
-
-      if (this.connectionState !== 'streaming') {
-        this.setState('streaming');
-      }
     } catch (error: any) {
       console.error('[GeminiLive] Playback error:', error.message);
     }
@@ -304,18 +293,15 @@ export class GeminiLiveClient {
     };
 
     this.sourceNode.connect(processor);
-    // CRITICAL: Do NOT connect processor to destination — prevents feedback loop
-    // processor.connect(this.audioCtx.destination);  // REMOVED
+    // NO connect to destination — prevents feedback loop
     this.processorNode = processor;
-
-    console.log('[GeminiLive] Capture ready (mic:', micRate, '→ 16kHz, no local playback)');
+    console.log('[GeminiLive] Capture ready');
   }
 
-  muteMic() { this.isMicMuted = true; console.log('[GeminiLive] Mic muted'); }
-  unmuteMic() { this.isMicMuted = false; console.log('[GeminiLive] Mic unmuted'); }
+  muteMic() { this.isMicMuted = true; }
+  unmuteMic() { this.isMicMuted = false; }
 
   disconnect() {
-    console.log('[GeminiLive] Disconnecting...');
     this.audioBuffer = new Float32Array(0);
     this.nextPlayTime = 0;
     if (this.micStream) { this.micStream.getTracks().forEach(t => t.stop()); this.micStream = null; }
