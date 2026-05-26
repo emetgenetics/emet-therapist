@@ -273,6 +273,21 @@ export class GeminiClient {
         };
       });
 
+      // Handle messages - SET THIS UP BEFORE SENDING SETUP
+      this.ws.onmessage = (event) => {
+        if (typeof event.data === 'string') {
+          try {
+            const msg = JSON.parse(event.data);
+            console.log('[Gemini] JSON message received:', JSON.stringify(msg).substring(0, 200));
+            this.handleJsonMessage(msg);
+          } catch (e) {
+            console.error('[Gemini] JSON parse error:', e);
+          }
+        } else {
+          console.log('[Gemini] Binary message:', event.data?.byteLength || event.data?.size, 'bytes');
+        }
+      };
+
       // Send setup message
       const store = useSessionStore.getState();
       const instructions = getPromptForState(store.phase, store.day);
@@ -296,28 +311,21 @@ export class GeminiClient {
       this.ws.send(JSON.stringify(setupMessage));
       console.log('[Gemini] Setup sent');
 
-      // Handle messages
-      this.ws.onmessage = (event) => {
-        if (typeof event.data === 'string') {
-          try {
-            const msg = JSON.parse(event.data);
-            this.handleJsonMessage(msg);
-          } catch (e) {
-            console.error('[Gemini] JSON parse error:', e);
-          }
-        } else {
-          console.log('[Gemini] Binary message:', event.data?.byteLength || event.data?.size, 'bytes');
-        }
-      };
-
       // Start audio capture (BUG 2: ScriptProcessorNode)
       this.audioRecorder = new AudioRecorder(INPUT_SAMPLE_RATE);
       this.audioRecorder.onData((base64) => { this.sendAudioChunk(base64); });
       await this.audioRecorder.start();
       console.log('[Gemini] Audio capture started');
 
-      // BUG 1 fix: Send initial prompt inside onopen, after setup confirmed
-      // We send it after setupComplete is received (see handleJsonMessage)
+      // CRITICAL FIX: If we don't receive setupComplete within 2 seconds, assume ready
+      // The Gemini API may not always send setupComplete, but if we're getting binary data, we're connected
+      setTimeout(() => {
+        if (this.getState() === 'connecting') {
+          console.log('[Gemini] ⚠️ No setupComplete received, assuming ready');
+          this.setState('ready');
+          this.sendClientContent('Begin the IADC session. Introduce yourself briefly and ask me to think about the person I have lost.');
+        }
+      }, 2000);
 
     } catch (error: any) {
       console.error('[Gemini] Connect failed:', error.message);
