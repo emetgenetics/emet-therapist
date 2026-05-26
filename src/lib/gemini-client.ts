@@ -287,7 +287,7 @@ class AudioRecorder {
 }
 
 // ── Gemini Live Client (based on reference repo's GenAILiveClient) ───────
-const GEMINI_MODEL = 'gemini-3.1-flash-live-preview';
+const GEMINI_MODEL = 'gemini-2.0-flash-live-preview-04-09';
 
 export class GeminiClient {
   private client: GoogleGenAI | null = null;
