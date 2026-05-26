@@ -11,6 +11,7 @@
   "dependencies": {
     "@google/genai": "^2.6.0",
     "@mediapipe/tasks-vision": "^0.10.35",
+    "eventemitter3": "^5.0.4",
     "next": "16.2.6",
     "openai": "^6.39.0",
     "react": "19.2.4",
