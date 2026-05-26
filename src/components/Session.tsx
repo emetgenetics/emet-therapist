@@ -14,6 +14,7 @@ export default function Session() {
   const clientRef = useRef<GeminiClient | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const eyeTrackingActive = useRef(false);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Emergency handler ──────────────────────────────────────────────────
   const handleEmergency = useCallback(() => {
@@ -30,12 +31,10 @@ export default function Session() {
 
     async function startEyeTracking() {
       try {
-        // 1. Init MediaPipe FaceLandmarker
         await initEyeTracker();
         if (cancelled) return;
         console.log('[Session] Eye tracker initialized');
 
-        // 2. Get webcam stream
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: 'user', width: 640, height: 480 },
         });
@@ -44,14 +43,12 @@ export default function Session() {
           return;
         }
 
-        // 3. Attach to hidden video element
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           await videoRef.current.play();
           if (cancelled) return;
           console.log('[Session] Eye tracking video active');
 
-          // 4. Start continuous processing loop
           const loop = () => {
             if (videoRef.current && videoRef.current.readyState >= 2) {
               processEyeFrame(videoRef.current);
@@ -78,7 +75,7 @@ export default function Session() {
     };
   }, [store.eyeTracking.enabled]);
 
-  // ── Gemini + Audio: starts on mount ────────────────────────────────────
+  // ── Gemini + Audio: starts on mount, BUG 7: auto-reconnect ─────────────
   useEffect(() => {
     const client = new GeminiClient();
     clientRef.current = client;
@@ -86,6 +83,17 @@ export default function Session() {
     client.onStateChange = (state) => {
       store.setConnectionState(state);
       console.log('[Session] State:', state);
+
+      // BUG 7: Auto-reconnect on error after 3 seconds
+      if (state === 'error') {
+        if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = setTimeout(() => {
+          if (clientRef.current === client) {
+            console.log('[Session] Auto-reconnecting...');
+            client.connect();
+          }
+        }, 3000);
+      }
     };
 
     client.onTranscript = (text, speaker) => {
@@ -99,6 +107,8 @@ export default function Session() {
     client.connect();
 
     return () => {
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      clientRef.current = null;
       client.disconnect();
     };
   }, []);
@@ -174,7 +184,7 @@ export default function Session() {
               {store.connectionState === 'streaming' || store.connectionState === 'ready'
                 ? 'Session active'
                 : store.connectionState === 'error'
-                ? 'Connection error'
+                ? 'Connection error — reconnecting...'
                 : store.connectionState === 'disconnected'
                 ? 'Disconnected'
                 : 'Connecting...'}

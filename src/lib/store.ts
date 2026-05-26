@@ -42,10 +42,14 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     }, durationSeconds * 1000);
   },
 
-  stopBls: () => set({
-    bls: { ...initialBls },
-    isMicMuted: false,
-  }),
+  // BUG 4 fix: delay mic unmute to let AudioPanner fade out
+  stopBls: () => {
+    set({ bls: { ...initialBls } });
+    // Do NOT unmute immediately — AudioPanner needs time to fade
+    setTimeout(() => {
+      set({ isMicMuted: false });
+    }, 600);
+  },
 
   setSuds: (suds: number) => set({ suds }),
   setMicMuted: (isMicMuted: boolean) => set({ isMicMuted }),
