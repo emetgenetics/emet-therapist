@@ -57,8 +57,7 @@ export class GeminiLiveClient {
       const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
       if (!apiKey) throw new Error('NEXT_PUBLIC_GEMINI_API_KEY missing');
 
-      // FIX: Use v1beta, not v1alpha
-      const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${apiKey}`;
+      const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${apiKey}`;
       console.log('[GeminiLive] Connecting...');
       this.ws = new WebSocket(wsUrl);
 
@@ -92,36 +91,35 @@ export class GeminiLiveClient {
         };
       });
 
-      // FIX: Use "config" not "setup", correct structure
       const currentPhase = useSessionStore.getState().phase;
       const instructions = this.currentInstructions || getPromptForState(currentPhase);
 
-      const configMessage = {
-        config: {
+      const setupMessage = {
+        setup: {
           model: `models/${GEMINI_MODEL}`,
-          responseModalities: ['AUDIO'],
-          systemInstruction: {
-            parts: [{ text: instructions }]
-          },
-          generationConfig: {
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: {
-                  voiceName: 'Puck'
+          generation_config: {
+            response_modalities: ["AUDIO"],
+            speech_config: {
+              voice_config: {
+                prebuilt_voice_config: {
+                  voice_name: "Puck"
                 }
               }
             }
           },
+          system_instruction: {
+            parts: [{ text: instructions }]
+          },
           tools: [
             {
-              functionDeclarations: TOOL_SCHEMAS
+              function_declarations: TOOL_SCHEMAS
             }
           ]
         }
       };
 
-      this.ws.send(JSON.stringify(configMessage));
-      console.log('[GeminiLive] Config sent:', JSON.stringify(configMessage).substring(0, 200));
+      this.ws.send(JSON.stringify(setupMessage));
+      console.log('[GeminiLive] Setup sent:', JSON.stringify(setupMessage).substring(0, 200));
       this.setState('awaiting_setup');
 
       // Handle messages
@@ -152,7 +150,7 @@ export class GeminiLiveClient {
   }
 
   private handleJsonMessage(msg: any) {
-    if (msg.setupComplete !== undefined) {
+    if (msg.setup_complete !== undefined) {
       console.log('[GeminiLive] ✅ Setup confirmed');
       this.setState('ready');
       setTimeout(() => {
@@ -161,44 +159,43 @@ export class GeminiLiveClient {
       return;
     }
 
-    if (msg.serverContent?.modelTurn?.parts) {
+    if (msg.server_content?.model_turn?.parts) {
       if (this.connectionState === 'ready' || this.connectionState === 'awaiting_setup') {
         this.setState('streaming');
       }
-      for (const part of msg.serverContent.modelTurn.parts) {
+      for (const part of msg.server_content.model_turn.parts) {
         if (part.text) {
           console.log('[GeminiLive] AI:', part.text);
           this.onTranscript?.(part.text, 'ai');
         }
-        // Audio arrives as base64 inlineData in JSON for this model
-        if (part.inlineData?.data && part.inlineData?.mimeType?.startsWith('audio/')) {
-          const binary = Uint8Array.from(atob(part.inlineData.data), c => c.charCodeAt(0));
+        if (part.inline_data?.data && part.inline_data?.mime_type?.startsWith('audio/')) {
+          const binary = Uint8Array.from(atob(part.inline_data.data), c => c.charCodeAt(0));
           console.log('[GeminiLive] Audio part:', binary.length, 'bytes');
           this.playAudioChunk(binary);
         }
       }
     }
 
-    if (msg.serverContent?.inputTranscription?.text) {
-      this.onTranscript?.(msg.serverContent.inputTranscription.text, 'user');
+    if (msg.server_content?.input_transcription?.text) {
+      this.onTranscript?.(msg.server_content.input_transcription.text, 'user');
     }
 
-    if (msg.serverContent?.turnComplete && this.connectionState === 'streaming') {
+    if (msg.server_content?.turn_complete && this.connectionState === 'streaming') {
       this.setState('ready');
     }
 
-    if (msg.serverContent?.interrupted) {
+    if (msg.server_content?.interrupted) {
       this.nextPlayTime = 0;
     }
 
-    if (msg.toolCall?.functionCalls) {
-      for (const call of msg.toolCall.functionCalls) {
+    if (msg.tool_call?.function_calls) {
+      for (const call of msg.tool_call.function_calls) {
         const result = executeTool(call.name, call.args || {});
         this.onToolCall?.(call.name, call.args || {}, call.id);
         if (this.ws?.readyState === WebSocket.OPEN) {
           this.ws.send(JSON.stringify({
-            toolResponse: {
-              functionResponses: [{ name: call.name, id: call.id, response: { result: result.message } }],
+            tool_response: {
+              function_responses: [{ name: call.name, id: call.id, response: { result: result.message } }],
             },
           }));
         }
@@ -215,9 +212,9 @@ export class GeminiLiveClient {
   private sendClientContent(text: string) {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({
-        clientContent: { turns: [{ role: 'user', parts: [{ text }] }], turnComplete: true },
+        client_content: { turns: [{ role: 'user', parts: [{ text }] }], turn_complete: true },
       }));
-      console.log('[GeminiLive] Sent:', text.substring(0, 60));
+      console.log('[GeminiLive] Sent client_content:', text.substring(0, 60));
     }
   }
 
@@ -287,7 +284,7 @@ export class GeminiLiveClient {
         }
 
         this.ws.send(JSON.stringify({
-          realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: int16ArrayToBase64(pcm16) } },
+          realtime_input: { audio: { mime_type: 'audio/pcm;rate=16000', data: int16ArrayToBase64(pcm16) } },
         }));
       }
     };
