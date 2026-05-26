@@ -3,24 +3,20 @@
 import { useRef, useEffect, useCallback } from 'react';
 import { useSessionStore } from '@/lib/store';
 
-interface AudioPannerProps {
-  isRunning: boolean;
-  speedHz: number;
-  frequency?: number;
-}
+const COLOR_FREQ: Record<string, number> = {
+  white: 440,
+  amber: 330,
+  emerald: 220,
+  blue: 196,
+};
 
-export default function AudioPanner({
-  isRunning,
-  speedHz,
-  frequency = 440,
-}: AudioPannerProps) {
+export default function AudioPanner() {
   const ctxRef = useRef<AudioContext | null>(null);
   const oscRef = useRef<OscillatorNode | null>(null);
   const pannerRef = useRef<StereoPannerNode | null>(null);
   const gainRef = useRef<GainNode | null>(null);
   const animRef = useRef<number>(0);
-  // Read shared start time from store — same as Lightbar
-  const blsStartTime = useSessionStore((s) => s.blsStartTime);
+  const blsStartTime = useSessionStore((s) => s.bls.startTime);
 
   const stopAudio = useCallback(() => {
     if (animRef.current) {
@@ -33,14 +29,22 @@ export default function AudioPanner({
     const ctx = ctxRef.current;
 
     if (gain && ctx) {
-      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.5);
+      try {
+        gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.5);
+      } catch {
+        // Ignore if already stopped
+      }
     }
 
     setTimeout(() => {
-      osc?.stop();
-      osc?.disconnect();
-      pannerRef.current?.disconnect();
-      gain?.disconnect();
+      try {
+        osc?.stop();
+        osc?.disconnect();
+        pannerRef.current?.disconnect();
+        gain?.disconnect();
+      } catch {
+        // Ignore
+      }
       oscRef.current = null;
       pannerRef.current = null;
       gainRef.current = null;
@@ -48,24 +52,24 @@ export default function AudioPanner({
   }, []);
 
   const startAudio = useCallback(() => {
-    // Create AudioContext on first user interaction (browser policy)
+    const { bls } = useSessionStore.getState();
+
     if (!ctxRef.current) {
       ctxRef.current = new AudioContext();
     }
     const ctx = ctxRef.current;
 
-    // Resume if suspended
     if (ctx.state === 'suspended') {
       ctx.resume();
     }
 
     const osc = ctx.createOscillator();
     osc.type = 'sine';
-    osc.frequency.value = frequency;
+    osc.frequency.value = COLOR_FREQ[bls.color] || 440;
 
     const panner = ctx.createStereoPanner();
     const gain = ctx.createGain();
-    gain.gain.value = 0.08; // very quiet
+    gain.gain.value = 0.08; // Very quiet
 
     osc.connect(panner);
     panner.connect(gain);
@@ -77,22 +81,25 @@ export default function AudioPanner({
     pannerRef.current = panner;
     gainRef.current = gain;
 
-    // Use shared timebase from store — same startTime as Lightbar
+    // Animate panner using shared timebase
     const animate = () => {
+      const { bls: currentBls } = useSessionStore.getState();
+      if (!currentBls.isRunning) return;
+
       const elapsed = (performance.now() - blsStartTime) / 1000;
       if (pannerRef.current) {
-        pannerRef.current.pan.value = Math.sin(
-          2 * Math.PI * speedHz * elapsed
-        );
+        pannerRef.current.pan.value = Math.sin(2 * Math.PI * currentBls.speedHz * elapsed);
       }
       animRef.current = requestAnimationFrame(animate);
     };
 
     animRef.current = requestAnimationFrame(animate);
-  }, [frequency, speedHz, blsStartTime]);
+  }, [blsStartTime]);
 
   useEffect(() => {
-    if (isRunning) {
+    const { bls } = useSessionStore.getState();
+
+    if (bls.isRunning) {
       startAudio();
     } else {
       stopAudio();
@@ -103,7 +110,7 @@ export default function AudioPanner({
         cancelAnimationFrame(animRef.current);
       }
     };
-  }, [isRunning, startAudio, stopAudio]);
+  }, [startAudio, stopAudio]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -113,5 +120,5 @@ export default function AudioPanner({
     };
   }, [stopAudio]);
 
-  return null; // This is a non-visual component
+  return null; // Non-visual component
 }

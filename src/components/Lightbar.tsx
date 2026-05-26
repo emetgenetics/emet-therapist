@@ -2,12 +2,7 @@
 
 import { useRef, useEffect, useCallback } from 'react';
 import { useSessionStore } from '@/lib/store';
-
-interface LightbarProps {
-  isRunning: boolean;
-  speedHz: number;
-  color: string;
-}
+import { getAdaptiveSpeed } from '@/lib/eye-tracking';
 
 const COLOR_MAP: Record<string, { r: number; g: number; b: number }> = {
   white: { r: 255, g: 255, b: 255 },
@@ -16,13 +11,12 @@ const COLOR_MAP: Record<string, { r: number; g: number; b: number }> = {
   blue: { r: 96, g: 165, b: 250 },
 };
 
-export default function Lightbar({ isRunning, speedHz, color }: LightbarProps) {
+export default function Lightbar() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
   const opacityRef = useRef<number>(0);
   const fadeDirectionRef = useRef<'in' | 'out' | 'none'>('none');
-  // Read shared start time from store (set by startBls)
-  const blsStartTime = useSessionStore((s) => s.blsStartTime);
+  const blsStartTime = useSessionStore((s) => s.bls.startTime);
 
   const draw = useCallback(
     (timestamp: number) => {
@@ -31,6 +25,9 @@ export default function Lightbar({ isRunning, speedHz, color }: LightbarProps) {
 
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
+
+      const { isRunning, speedHz, color } = useSessionStore.getState().bls;
+      const { eyeTracking } = useSessionStore.getState();
 
       // Handle fade in/out
       if (isRunning && fadeDirectionRef.current !== 'in') {
@@ -72,10 +69,17 @@ export default function Lightbar({ isRunning, speedHz, color }: LightbarProps) {
       const centerY = canvas.height / 2;
       const amplitude = canvas.width * 0.35;
 
-      // Use shared timebase from store — same startTime as AudioPanner
+      // Use shared timebase from store
       const elapsedSeconds = (timestamp - blsStartTime) / 1000;
 
-      const x = centerX + amplitude * Math.sin(2 * Math.PI * speedHz * elapsedSeconds);
+      // Adaptive speed if eye tracking is active
+      let currentSpeed = speedHz;
+      if (eyeTracking.enabled && eyeTracking.state === 'TRACKING') {
+        const lightbarX = 0.5 + 0.5 * Math.sin(2 * Math.PI * speedHz * elapsedSeconds);
+        currentSpeed = getAdaptiveSpeed(speedHz, eyeTracking.position.x, lightbarX);
+      }
+
+      const x = centerX + amplitude * Math.sin(2 * Math.PI * currentSpeed * elapsedSeconds);
 
       const rgb = COLOR_MAP[color] || COLOR_MAP.white;
       const circleRadius = 40;
@@ -107,11 +111,11 @@ export default function Lightbar({ isRunning, speedHz, color }: LightbarProps) {
 
       animRef.current = requestAnimationFrame(draw);
     },
-    [isRunning, speedHz, color, blsStartTime]
+    [blsStartTime]
   );
 
   useEffect(() => {
-    if (isRunning) {
+    if (useSessionStore.getState().bls.isRunning) {
       fadeDirectionRef.current = 'in';
     } else {
       fadeDirectionRef.current = 'out';
@@ -124,12 +128,12 @@ export default function Lightbar({ isRunning, speedHz, color }: LightbarProps) {
         cancelAnimationFrame(animRef.current);
       }
     };
-  }, [isRunning, draw]);
+  }, [draw]);
 
   return (
     <canvas
       ref={canvasRef}
-      className="w-full h-full"
+      className="fixed inset-0 z-10 pointer-events-none"
       style={{ display: 'block' }}
     />
   );
