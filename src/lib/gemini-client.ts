@@ -210,15 +210,20 @@ export class GeminiClient {
     this.onStateChange?.(state);
   }
 
-  // BUG 3 fix: lazy AudioContext creation
+  // BUG 3 fix: lazy AudioContext creation + ensure it's resumed
   private getOrCreateAudioStreamer(): AudioStreamer {
     if (!this.audioOutCtx) {
       this.audioOutCtx = new AudioContext({ sampleRate: OUTPUT_SAMPLE_RATE });
+      console.log('[Gemini] AudioContext created');
     }
     if (this.audioOutCtx.state === 'suspended') {
-      this.audioOutCtx.resume();
+      console.log('[Gemini] AudioContext suspended, resuming...');
+      this.audioOutCtx.resume().catch(e => console.error('[Gemini] Failed to resume AudioContext:', e));
+    } else if (this.audioOutCtx.state !== 'running') {
+      console.log('[Gemini] AudioContext state:', this.audioOutCtx.state);
     }
     if (!this.audioStreamer) {
+      console.log('[Gemini] Creating AudioStreamer');
       this.audioStreamer = new AudioStreamer(this.audioOutCtx);
     }
     return this.audioStreamer;
@@ -318,14 +323,16 @@ export class GeminiClient {
       console.log('[Gemini] Audio capture started');
 
       // CRITICAL FIX: If we don't receive setupComplete within 2 seconds, assume ready
-      // The Gemini API may not always send setupComplete, but if we're getting binary data, we're connected
-      setTimeout(() => {
-        if (this.getState() === 'connecting') {
-          console.log('[Gemini] ⚠️ No setupComplete received, assuming ready');
-          this.setState('ready');
-          this.sendClientContent('Begin the IADC session. Introduce yourself briefly and ask me to think about the person I have lost.');
-        }
-      }, 2000);
+          // The Gemini API may not always send setupComplete, but if we're getting binary data, we're connected
+          setTimeout(() => {
+            if (this.getState() === 'connecting') {
+              console.log('[Gemini] ⚠️ No setupComplete received, assuming ready');
+              // Ensure AudioContext is created and resumed before sending prompt
+              this.getOrCreateAudioStreamer();
+              this.setState('ready');
+              this.sendClientContent('Begin the IADC session. Introduce yourself briefly and ask me to think about the person I have lost.');
+            }
+          }, 2000);
 
     } catch (error: any) {
       console.error('[Gemini] Connect failed:', error.message);
@@ -342,6 +349,8 @@ export class GeminiClient {
     // Setup complete — BUG 1: send initial prompt HERE
     if (msg.setupComplete !== undefined) {
       console.log('[Gemini] ✅ Setup confirmed');
+      // Ensure AudioContext is created and resumed
+      this.getOrCreateAudioStreamer();
       this.setState('ready');
       setTimeout(() => {
         this.sendClientContent('Begin the IADC session. Introduce yourself briefly and ask me to think about the person I have lost.');
