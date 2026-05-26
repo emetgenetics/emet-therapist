@@ -289,7 +289,10 @@ export class GeminiClient {
             console.error('[Gemini] JSON parse error:', e);
           }
         } else {
-          console.log('[Gemini] Binary message:', event.data?.byteLength || event.data?.size, 'bytes');
+          // Binary messages are real-time audio data from Gemini
+          const bytes = new Uint8Array(event.data as ArrayBuffer);
+          console.log('[Gemini] Audio binary message:', bytes.length, 'bytes');
+          this.getOrCreateAudioStreamer().addPCM16(bytes);
         }
       };
 
