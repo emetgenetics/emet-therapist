@@ -31,22 +31,18 @@ class AudioStreamer {
     this.gainNode = this.context.createGain();
     this.gainNode.gain.value = 1.0;
     this.gainNode.connect(this.context.destination);
-    console.log('[Gemini] AudioStreamer created, context state:', context.state);
   }
 
   private processPCM16Chunk(chunk: Uint8Array): Float32Array {
-    console.log('[Gemini] processPCM16Chunk, input length:', chunk.length, 'bytes');
     const float32Array = new Float32Array(chunk.length / 2);
     const dataView = new DataView(chunk.buffer);
     for (let i = 0; i < chunk.length / 2; i++) {
       float32Array[i] = dataView.getInt16(i * 2, true) / 32768;
     }
-    console.log('[Gemini] processPCM16Chunk done, output length:', float32Array.length, 'samples');
     return float32Array;
   }
 
   addPCM16(chunk: Uint8Array) {
-    console.log('[Gemini] addPCM16 called, chunk length:', chunk.length, 'bytes');
     this.isStreamComplete = false;
     let processingBuffer = this.processPCM16Chunk(chunk);
     while (processingBuffer.length >= this.bufferSize) {
@@ -55,7 +51,6 @@ class AudioStreamer {
     }
     if (processingBuffer.length > 0) { this.audioQueue.push(processingBuffer); }
     if (!this.isPlaying) {
-      console.log('[Gemini] Starting playback');
       this.isPlaying = true;
       this.scheduledTime = this.context.currentTime + this.initialBufferTime;
       this.scheduleNextBuffer();
