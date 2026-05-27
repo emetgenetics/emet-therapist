@@ -9,7 +9,7 @@ import { getPromptForState } from './prompts';
 import { TOOL_SCHEMAS, executeTool } from './tools';
 import type { ConnectionState } from '@/types';
 
-const GEMINI_MODEL = 'gemini-3.1-flash-live-preview';
+const GEMINI_MODEL = 'gemini-2.0-flash-live-001';
 const INPUT_SAMPLE_RATE = 16000;
 const OUTPUT_SAMPLE_RATE = 24000;
 
@@ -305,7 +305,7 @@ export class GeminiClient {
         }
       };
 
-      // Send setup message
+      // Send setup message - log it for debugging
       const store = useSessionStore.getState();
       const instructions = getPromptForState(store.phase, store.day);
 
@@ -325,6 +325,7 @@ export class GeminiClient {
         },
       };
 
+      console.log('[Gemini] Sending setup:', JSON.stringify(setupMessage).substring(0, 200));
       this.ws.send(JSON.stringify(setupMessage));
       console.log('[Gemini] Setup sent');
 
