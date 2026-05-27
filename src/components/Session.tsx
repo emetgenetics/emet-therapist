@@ -34,11 +34,17 @@ export default function Session() {
       const video = videoRef.current;
       if (!video) return;
 
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: 640, height: 480 },
+      });
+      video.srcObject = stream;
+      await video.play();
+
       const processFrame = () => {
-            if (cancelled) return;
-            processEyeFrame(video);
-            animId = requestAnimationFrame(processFrame);
-          };
+        if (cancelled) return;
+        processEyeFrame(video);
+        animId = requestAnimationFrame(processFrame);
+      };
 
       processFrame();
     };
@@ -48,8 +54,13 @@ export default function Session() {
     return () => {
       cancelled = true;
       cancelAnimationFrame(animId);
+      if (videoRef.current?.srcObject) {
+        const stream = videoRef.current.srcObject as MediaStream;
+        stream.getTracks().forEach((t) => t.stop());
+        videoRef.current.srcObject = null;
+      }
     };
-  }, []);
+  }, [store.eyeTracking.enabled]);
 
   // Inworld AI + Audio: starts on mount, auto-reconnect
   useEffect(() => {
