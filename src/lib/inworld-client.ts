@@ -1,10 +1,11 @@
 /**
  * Inworld AI Realtime Client
- * Uses Inworld's Realtime API with Basic Auth
- * Connects to wss://api.inworld.ai/v1/realtime
+ * Uses @inworld/web-core SDK for browser-based WebSocket connection
  * 
- * API key format: base64 encoded "key:secret"
- * Auth: Basic Auth via WebSocket sub-protocol
+ * Flow:
+ * 1. Call /api/token to get a session token (server-side gRPC)
+ * 2. Connect to wss://studio.inworld.ai/v1/session/open via WebSocket
+ * 3. Send/receive JSON-serialized InworldPacket messages
  */
 
 import { useSessionStore } from './store';
@@ -12,9 +13,10 @@ import { getPromptForState } from './prompts';
 import { TOOL_SCHEMAS, executeTool } from './tools';
 import type { ConnectionState } from '@/types';
 
-const INWORLD_API_KEY = process.env.NEXT_PUBLIC_INWORLD_API_KEY || '';
 const INPUT_SAMPLE_RATE = 16000;
 const OUTPUT_SAMPLE_RATE = 24000;
+const INWORLD_WS_HOSTNAME = 'studio.inworld.ai';
+const SESSION_PATH = '/v1/session/open';
 
 // ── Audio Streamer ──────────────────────────────────────────────────────────
 class AudioStreamer {
@@ -130,13 +132,13 @@ class AudioRecorder {
   private source: MediaStreamAudioSourceNode | null = null;
   private processor: ScriptProcessorNode | null = null;
   private silentGain: GainNode | null = null;
-  private onDataCallback: ((base64: string) => void) | null = null;
+  private onDataCallback: ((data: ArrayBuffer) => void) | null = null;
   private buffer: Float32Array = new Float32Array(0);
   private muted = false;
 
   constructor(public sampleRate = INPUT_SAMPLE_RATE) {}
 
-  onData(callback: (base64: string) => void) { this.onDataCallback = callback; }
+  onData(callback: (data: ArrayBuffer) => void) { this.onDataCallback = callback; }
 
   async start() {
     this.stream = await navigator.mediaDevices.getUserMedia({
@@ -145,7 +147,6 @@ class AudioRecorder {
     this.audioContext = new AudioContext({ sampleRate: this.sampleRate });
     this.source = this.audioContext.createMediaStreamSource(this.stream);
     this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
-
     this.silentGain = this.audioContext.createGain();
     this.silentGain.gain.value = 0;
 
@@ -165,10 +166,7 @@ class AudioRecorder {
         for (let i = 0; i < chunk.length; i++) {
           pcm16[i] = Math.max(-32768, Math.min(32767, Math.round(chunk[i] * 32767)));
         }
-        const bytes = new Uint8Array(pcm16.buffer);
-        let binary = '';
-        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-        this.onDataCallback(btoa(binary));
+        this.onDataCallback(pcm16.buffer);
       }
     };
 
@@ -190,15 +188,7 @@ class AudioRecorder {
   setMuted(muted: boolean) { this.muted = muted; }
 }
 
-// ── Helper ───────────────────────────────────────────────────────────────────
-function base64ToUint8Array(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
-
-// ── Main Inworld AI Realtime Client ─────────────────────────────────────────
+// ── Main Inworld Client ─────────────────────────────────────────────────────
 export class InworldClient {
   ws: WebSocket | null = null;
   private audioStreamer: AudioStreamer | null = null;
@@ -206,6 +196,9 @@ export class InworldClient {
   private audioOutCtx: AudioContext | null = null;
   private isMuted = false;
   private connectionResolved = false;
+  private sessionId: string | null = null;
+  private sessionToken: string | null = null;
+  private sessionType: string | null = null;
 
   onTranscript: ((text: string, speaker: 'ai' | 'user') => void) | null = null;
   onStateChange: ((state: ConnectionState) => void) | null = null;
@@ -234,12 +227,23 @@ export class InworldClient {
       this.setState('connecting');
       this.connectionResolved = false;
 
-      if (!INWORLD_API_KEY) {
-        throw new Error('NEXT_PUBLIC_INWORLD_API_KEY is not set');
+      // Step 1: Get session token from our backend
+      console.log('[Inworld] Getting session token...');
+      const tokenRes = await fetch('/api/token');
+      if (!tokenRes.ok) {
+        const err = await tokenRes.json();
+        throw new Error(err.error || 'Failed to get session token');
       }
+      const tokenData = await tokenRes.json();
+      this.sessionId = tokenData.sessionId;
+      this.sessionToken = tokenData.token;
+      this.sessionType = tokenData.type;
+      console.log('[Inworld] Token received, sessionId:', this.sessionId);
 
-      // Inworld uses Basic Auth — key is base64("key:secret"), sent as query param (raw, not encoded)
-      this.ws = new WebSocket(`wss://api.inworld.ai/v1/realtime?api_key=${INWORLD_API_KEY}`);
+      // Step 2: Connect to Inworld WebSocket
+      const wsUrl = `wss://${INWORLD_WS_HOSTNAME}${SESSION_PATH}?session_id=${this.sessionId}`;
+      console.log('[Inworld] Connecting to:', wsUrl);
+      this.ws = new WebSocket(wsUrl, [this.sessionType!, this.sessionToken!]);
 
       await new Promise<void>((resolve, reject) => {
         if (!this.ws) return reject(new Error('WebSocket not created'));
@@ -251,6 +255,7 @@ export class InworldClient {
         }, 15000);
 
         this.ws.onopen = () => {
+          console.log('[Inworld] WebSocket open');
           if (!this.connectionResolved) {
             this.connectionResolved = true;
             clearTimeout(timeout);
@@ -261,7 +266,7 @@ export class InworldClient {
           if (!this.connectionResolved) {
             this.connectionResolved = true;
             clearTimeout(timeout);
-            reject(new Error('WebSocket connection failed — check API key'));
+            reject(new Error('WebSocket connection failed'));
           }
         };
         this.ws.onclose = (event) => {
@@ -277,57 +282,26 @@ export class InworldClient {
 
       // Handle messages
       this.ws.onmessage = (event) => {
-        if (typeof event.data === 'string') {
-          try {
-            const msg = JSON.parse(event.data);
-            this.handleJsonMessage(msg);
-          } catch (e) {
-            console.error('[Inworld] JSON parse error:', e);
-          }
-        } else {
-          const bytes = new Uint8Array(event.data as ArrayBuffer);
-          if (bytes.length > 0) {
-            this.getOrCreateAudioStreamer().addPCM16(bytes);
-          }
+        try {
+          const msg = JSON.parse(event.data);
+          this.handleMessage(msg);
+        } catch (e) {
+          console.error('[Inworld] JSON parse error:', e);
         }
       };
 
-      // Send session configuration
-      const store = useSessionStore.getState();
-      const instructions = getPromptForState(store.phase, store.day);
-
-      const sessionConfig = {
-        type: 'session.update',
-        session: {
-          modalities: ['text', 'audio'],
-          instructions: instructions,
-          voice: 'default',
-          input_audio_format: 'pcm16',
-          output_audio_format: 'pcm16',
-          turn_detection: {
-            type: 'server_vad',
-            threshold: 0.5,
-            prefix_padding_ms: 300,
-            silence_duration_ms: 500,
-          },
-          tools: TOOL_SCHEMAS.map(schema => ({
-            type: 'function',
-            ...schema,
-          })),
-        },
-      };
-
-      this.ws.send(JSON.stringify(sessionConfig));
-
       // Start audio capture
       this.audioRecorder = new AudioRecorder(INPUT_SAMPLE_RATE);
-      this.audioRecorder.onData((base64) => { this.sendAudioChunk(base64); });
+      this.audioRecorder.onData((data) => { this.sendAudioRaw(data); });
       await this.audioRecorder.start();
+      console.log('[Inworld] Audio capture started');
 
-      // Send initial prompt
+      this.setState('ready');
+
+      // Send initial text to start the session
       setTimeout(() => {
-        this.sendClientContent('Begin the IADC session. Introduce yourself briefly and ask me to think about the person I have lost.');
-      }, 1000);
+        this.sendText('Hello, I am here for an IADC therapy session.');
+      }, 500);
 
     } catch (error: any) {
       console.error('[Inworld] Connect failed:', error.message);
@@ -337,89 +311,83 @@ export class InworldClient {
     }
   }
 
-  private handleJsonMessage(msg: any) {
-    console.log('[Inworld] Message type:', msg.type);
+  private handleMessage(msg: any) {
+    console.log('[Inworld] Message:', JSON.stringify(msg).substring(0, 200));
 
-    if (msg.type === 'session.created' || msg.type === 'session.ready') {
-      this.setState('ready');
-      return;
+    // Text response from AI
+    if (msg.text?.text) {
+      this.onTranscript?.(msg.text.text, 'ai');
     }
 
-    if (msg.type === 'response.done') {
-      if (this.getState() === 'streaming') this.setState('ready');
-      return;
+    // Audio response
+    if (msg.audio?.chunk) {
+      // Audio chunk is base64 encoded PCM16
+      const binary = atob(msg.audio.chunk);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      this.getOrCreateAudioStreamer().addPCM16(bytes);
     }
 
-    if (msg.type === 'response.audio.delta') {
-      if (msg.delta?.audio) {
-        const bytes = base64ToUint8Array(msg.delta.audio);
-        this.getOrCreateAudioStreamer().addPCM16(bytes);
-      }
-      if (this.getState() === 'ready') this.setState('streaming');
-      return;
+    // Control events
+    if (msg.control?.action) {
+      console.log('[Inworld] Control:', msg.control.action);
     }
 
-    if (msg.type === 'response.audio_transcript.delta') {
-      if (msg.delta?.text) this.onTranscript?.(msg.delta.text, 'ai');
-      return;
-    }
-
-    if (msg.type === 'conversation.item.input_audio_transcription.completed') {
-      if (msg.transcript) this.onTranscript?.(msg.transcript, 'user');
-      return;
-    }
-
-    if (msg.type === 'response.function_call_arguments.done') {
+    // Tool/function calls
+    if (msg.tool_call || msg.function_call) {
       this.handleToolCall(msg);
-      return;
     }
 
-    if (msg.type === 'error') {
-      console.error('[Inworld] Error:', msg.error);
-      this.onError?.(msg.error?.message || 'Unknown error');
-      this.setState('error');
+    // User transcription
+    if (msg.transcription?.text) {
+      this.onTranscript?.(msg.transcription.text, 'user');
     }
   }
 
   private handleToolCall(msg: any) {
-    const callId = msg.call_id;
-    const name = msg.name;
-    const argsStr = msg.arguments;
-    if (!name) return;
+    const call = msg.tool_call || msg.function_call;
+    if (!call?.name) return;
 
     try {
-      const args = JSON.parse(argsStr || '{}');
-      const result = executeTool(name, args);
+      const args = typeof call.arguments === 'string' 
+        ? JSON.parse(call.arguments) 
+        : (call.arguments || {});
+      const result = executeTool(call.name, args);
 
+      // Send tool response
       if (this.ws?.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify({
-          type: 'conversation.item.create',
-          item: { type: 'function_call_output', call_id: callId, output: JSON.stringify(result) },
+          tool_result: {
+            call_id: call.id || call.call_id,
+            output: JSON.stringify(result),
+          },
         }));
-        this.ws.send(JSON.stringify({ type: 'response.create' }));
       }
     } catch (e) {
       console.error('[Inworld] Tool call error:', e);
     }
   }
 
-  private getState(): ConnectionState {
-    return useSessionStore.getState().connectionState;
-  }
-
-  public sendClientContent(text: string) {
+  sendText(text: string) {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({
-        type: 'conversation.item.create',
-        item: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] },
+        text: { text },
       }));
-      this.ws.send(JSON.stringify({ type: 'response.create' }));
+      console.log('[Inworld] Sent text:', text.substring(0, 80));
     }
   }
 
-  sendAudioChunk(pcm16Base64: string) {
+  sendAudioRaw(arrayBuffer: ArrayBuffer) {
     if (this.isMuted || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    this.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: pcm16Base64 }));
+    // Convert ArrayBuffer to base64
+    const bytes = new Uint8Array(arrayBuffer);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    const base64 = btoa(binary);
+
+    this.ws.send(JSON.stringify({
+      audio: { chunk: base64 },
+    }));
   }
 
   muteMic() { this.isMuted = true; this.audioRecorder?.setMuted(true); }

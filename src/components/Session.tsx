@@ -32,19 +32,14 @@ export default function Session() {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: "user", width: 640, height: 480 },
         });
-        if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
+        if (cancelled) { stream.getTracks().forEach(t => t.stop()); return; }
 
         video.srcObject = stream;
         await video.play();
         console.log("[Session] Eye tracking video active");
 
         const loop = () => {
-          if (video.readyState >= 2) {
-            processEyeFrame(video);
-          }
+          if (video.readyState >= 2) processEyeFrame(video);
           animId = requestAnimationFrame(loop);
         };
         animId = requestAnimationFrame(loop);
@@ -59,7 +54,7 @@ export default function Session() {
       cancelled = true;
       cancelAnimationFrame(animId);
       if (videoRef.current?.srcObject) {
-        (videoRef.current.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
+        (videoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop());
         videoRef.current.srcObject = null;
       }
     };
@@ -202,6 +197,31 @@ export default function Session() {
             </p>
           </div>
         )}
+      </div>
+
+      {/* Bottom status bar */}
+      <div className="absolute bottom-4 left-4 right-4 flex justify-between text-white/30 text-sm z-20">
+        <span>
+          {store.connectionState === "streaming" || store.connectionState === "ready"
+            ? "Session active"
+            : store.connectionState}
+        </span>
+        {store.eyeTracking.enabled && (
+          <span
+            className={
+              store.eyeTracking.state === "TRACKING"
+                ? "text-emerald-400"
+                : store.eyeTracking.state === "FROZEN"
+                ? "text-amber-400"
+                : store.eyeTracking.state === "ERRATIC"
+                ? "text-red-400"
+                : ""
+            }
+          >
+            Eye: {store.eyeTracking.state}
+          </span>
+        )}
+        {store.isMicMuted && <span className="text-amber-400/60">Mic muted</span>}
       </div>
 
       {/* Emergency overlay */}
