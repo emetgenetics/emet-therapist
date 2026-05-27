@@ -43,6 +43,7 @@ class AudioStreamer {
   }
 
   addPCM16(chunk: Uint8Array) {
+    console.log('[Gemini] addPCM16, chunk:', chunk.length, 'bytes, context state:', this.context.state);
     this.isStreamComplete = false;
     let processingBuffer = this.processPCM16Chunk(chunk);
     while (processingBuffer.length >= this.bufferSize) {
@@ -51,6 +52,7 @@ class AudioStreamer {
     }
     if (processingBuffer.length > 0) { this.audioQueue.push(processingBuffer); }
     if (!this.isPlaying) {
+      console.log('[Gemini] Starting playback, queue:', this.audioQueue.length);
       this.isPlaying = true;
       this.scheduledTime = this.context.currentTime + this.initialBufferTime;
       this.scheduleNextBuffer();
