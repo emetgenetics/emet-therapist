@@ -67,8 +67,10 @@ class AudioStreamer {
 
   private scheduleNextBuffer() {
     const SCHEDULE_AHEAD_TIME = 0.2;
+    console.log('[Gemini] scheduleNextBuffer, queue:', this.audioQueue.length, 'context:', this.context.state);
     while (this.audioQueue.length > 0 && this.scheduledTime < this.context.currentTime + SCHEDULE_AHEAD_TIME) {
       const audioData = this.audioQueue.shift()!;
+      console.log('[Gemini] Playing buffer, samples:', audioData.length);
       const audioBuffer = this.createAudioBuffer(audioData);
       const source = this.context.createBufferSource();
       if (this.audioQueue.length === 0) {
@@ -85,6 +87,7 @@ class AudioStreamer {
       const startTime = Math.max(this.scheduledTime, this.context.currentTime);
       source.start(startTime);
       this.scheduledTime = startTime + audioBuffer.duration;
+      console.log('[Gemini] Buffer started, duration:', audioBuffer.duration);
     }
     if (this.audioQueue.length === 0) {
       if (this.isStreamComplete) {
