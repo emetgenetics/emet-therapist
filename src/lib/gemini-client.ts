@@ -28,8 +28,11 @@ class AudioStreamer {
   public onComplete = () => {};
 
   constructor(public context: AudioContext) {
+    console.log('[Gemini] AudioStreamer constructor, context state:', context.state);
     this.gainNode = this.context.createGain();
+    console.log('[Gemini] GainNode created, gain:', this.gainNode.gain.value);
     this.gainNode.connect(this.context.destination);
+    console.log('[Gemini] AudioStreamer connected to destination');
   }
 
   private processPCM16Chunk(chunk: Uint8Array): Float32Array {
