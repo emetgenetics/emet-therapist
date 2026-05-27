@@ -35,10 +35,10 @@ export default function Session() {
       if (!video) return;
 
       const processFrame = () => {
-        if (cancelled) return;
-        processEyeFrame(tracker, video);
-        animId = requestAnimationFrame(processFrame);
-      };
+            if (cancelled) return;
+            processEyeFrame(video);
+            animId = requestAnimationFrame(processFrame);
+          };
 
       processFrame();
     };
@@ -112,7 +112,6 @@ export default function Session() {
   // Render
   return (
     <div className="flex flex-col h-full">
-      <SessionStateIndicator />
       <div className="flex-1 flex">
         <div className="relative w-1/2">
           <Lightbar />

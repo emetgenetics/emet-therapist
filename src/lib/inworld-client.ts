@@ -440,7 +440,7 @@ export class InworldClient {
     return useSessionStore.getState().connectionState;
   }
 
-  private sendClientContent(text: string) {
+  public sendClientContent(text: string) {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({
         type: 'conversation.item.create',
