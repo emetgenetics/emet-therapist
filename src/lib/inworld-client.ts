@@ -2,6 +2,9 @@
  * Inworld AI Realtime Client
  * Uses Inworld's Realtime API (OpenAI-compatible schema)
  * Connects to wss://api.inworld.ai/v1/realtime
+ * 
+ * NOTE: Set NEXT_PUBLIC_INWORLD_API_KEY to a valid Inworld API key.
+ * If the key is invalid or connection fails, the client will show an error state.
  */
 
 import { useSessionStore } from './store';
@@ -154,7 +157,7 @@ class AudioRecorder {
       combined.set(input, this.buffer.length);
       this.buffer = combined;
 
-      const CHUNK_SAMPLES = 1600; // 100ms at 16kHz
+      const CHUNK_SAMPLES = 1600;
       while (this.buffer.length >= CHUNK_SAMPLES) {
         const chunk = this.buffer.slice(0, CHUNK_SAMPLES);
         this.buffer = this.buffer.slice(CHUNK_SAMPLES);
@@ -233,19 +236,18 @@ export class InworldClient {
       this.connectionResolved = false;
 
       if (!INWORLD_API_KEY) {
-        throw new Error('NEXT_PUBLIC_INWORLD_API_KEY is not set');
+        throw new Error('NEXT_PUBLIC_INWORLD_API_KEY is not set. Add it to .env.local');
       }
 
-      // Inworld Realtime API endpoint
-      const wsUrl = `wss://api.inworld.ai/v1/realtime?api_key=${INWORLD_API_KEY}`;
-      this.ws = new WebSocket(wsUrl);
+      // Inworld Realtime API endpoint — key as sub-protocol
+      this.ws = new WebSocket(`wss://api.inworld.ai/v1/realtime`, ['inworld', INWORLD_API_KEY]);
 
       await new Promise<void>((resolve, reject) => {
         if (!this.ws) return reject(new Error('WebSocket not created'));
         const timeout = setTimeout(() => {
           if (!this.connectionResolved) {
             this.connectionResolved = true;
-            reject(new Error('Connection timeout'));
+            reject(new Error('Connection timeout after 15s'));
           }
         }, 15000);
 
@@ -256,18 +258,18 @@ export class InworldClient {
             resolve();
           }
         };
-        this.ws.onerror = (err) => {
+        this.ws.onerror = () => {
           if (!this.connectionResolved) {
             this.connectionResolved = true;
             clearTimeout(timeout);
-            reject(new Error('WebSocket connection failed'));
+            reject(new Error('WebSocket connection failed — check API key'));
           }
         };
         this.ws.onclose = (event) => {
           if (!this.connectionResolved) {
             this.connectionResolved = true;
             clearTimeout(timeout);
-            reject(new Error(`Closed (${event.code}): ${event.reason}`));
+            reject(new Error(`Closed (${event.code}): ${event.reason || 'Unknown'}`));
           } else {
             this.setState('disconnected');
           }
@@ -284,7 +286,6 @@ export class InworldClient {
             console.error('[Inworld] JSON parse error:', e);
           }
         } else {
-          // Binary audio data
           const bytes = new Uint8Array(event.data as ArrayBuffer);
           if (bytes.length > 0) {
             this.getOrCreateAudioStreamer().addPCM16(bytes);
@@ -296,7 +297,6 @@ export class InworldClient {
       const store = useSessionStore.getState();
       const instructions = getPromptForState(store.phase, store.day);
 
-      // Inworld uses OpenAI-compatible session.update event
       const sessionConfig = {
         type: 'session.update',
         session: {
@@ -341,20 +341,17 @@ export class InworldClient {
   private handleJsonMessage(msg: any) {
     console.log('[Inworld] Message type:', msg.type);
 
-    // Session created
     if (msg.type === 'session.created') {
       this.sessionId = msg.session?.id;
       this.setState('ready');
       return;
     }
 
-    // Session ready
     if (msg.type === 'session.ready') {
       this.setState('ready');
       return;
     }
 
-    // Response done - AI finished speaking
     if (msg.type === 'response.done') {
       if (this.getState() === 'streaming') {
         this.setState('ready');
@@ -362,7 +359,6 @@ export class InworldClient {
       return;
     }
 
-    // Audio delta - streaming audio from AI
     if (msg.type === 'response.audio.delta') {
       if (msg.delta?.audio) {
         const bytes = base64ToUint8Array(msg.delta.audio);
@@ -374,7 +370,6 @@ export class InworldClient {
       return;
     }
 
-    // Audio transcript delta - AI speech text
     if (msg.type === 'response.audio_transcript.delta') {
       if (msg.delta?.text) {
         this.onTranscript?.(msg.delta.text, 'ai');
@@ -382,7 +377,6 @@ export class InworldClient {
       return;
     }
 
-    // Input audio transcript - user speech text
     if (msg.type === 'conversation.item.input_audio_transcription.completed') {
       if (msg.transcript) {
         this.onTranscript?.(msg.transcript, 'user');
@@ -390,13 +384,11 @@ export class InworldClient {
       return;
     }
 
-    // Function call - tool execution
     if (msg.type === 'response.function_call_arguments.done') {
       this.handleToolCall(msg);
       return;
     }
 
-    // Error
     if (msg.type === 'error') {
       console.error('[Inworld] Error:', msg.error);
       this.onError?.(msg.error?.message || 'Unknown error');
@@ -415,7 +407,6 @@ export class InworldClient {
       const args = JSON.parse(argsStr || '{}');
       const result = executeTool(name, args);
 
-      // Send tool response
       if (this.ws?.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify({
           type: 'conversation.item.create',
@@ -425,11 +416,7 @@ export class InworldClient {
             output: JSON.stringify(result),
           },
         }));
-
-        // Request new response after tool execution
-        this.ws.send(JSON.stringify({
-          type: 'response.create',
-        }));
+        this.ws.send(JSON.stringify({ type: 'response.create' }));
       }
     } catch (e) {
       console.error('[Inworld] Tool call error:', e);

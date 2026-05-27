@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 import { useSessionStore } from '@/lib/store';
 import { InworldClient } from '@/lib/inworld-client';
 import { initEyeTracker, processEyeFrame } from '@/lib/eye-tracking';
@@ -15,6 +15,7 @@ export default function Session() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const eyeTrackingActive = useRef(false);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [showBlsTest, setShowBlsTest] = useState(false);
 
   // Emergency handler
   const handleEmergency = useCallback(() => {
@@ -81,7 +82,7 @@ export default function Session() {
             clientRef.current = newClient;
             newClient.connect();
           }
-        }, 3000);
+        }, 5000);
       }
     };
 
@@ -120,9 +121,67 @@ export default function Session() {
     }
   }, [store.phase, store.bls]);
 
-  // Render
+  // Manual BLS test handler
+  const handleTestBlss = () => {
+    useSessionStore.getState().startBls({
+      speedHz: 2.0,
+      durationSeconds: 30,
+      color: 'white',
+    });
+  };
+
   return (
     <div className="flex flex-col h-full">
+      {/* Connection status + test controls */}
+      <div className="absolute top-4 left-4 z-30 flex items-center gap-3">
+        <div className={`w-3 h-3 rounded-full ${
+          store.connectionState === 'ready' || store.connectionState === 'streaming'
+            ? 'bg-green-500 animate-pulse'
+            : store.connectionState === 'connecting'
+            ? 'bg-yellow-500 animate-pulse'
+            : 'bg-red-500'
+        }`} />
+        <span className="text-xs text-white/50 font-mono">
+          {store.connectionState === 'ready' ? 'Connected' :
+           store.connectionState === 'streaming' ? 'AI Speaking' :
+           store.connectionState === 'connecting' ? 'Connecting...' :
+           store.connectionState === 'error' ? 'Error' : 'Disconnected'}
+        </span>
+        {store.connectionState !== 'ready' && store.connectionState !== 'streaming' && (
+          <button
+            onClick={() => setShowBlsTest(!showBlsTest)}
+            className="text-xs text-white/30 hover:text-white/60 underline"
+          >
+            Test BLS
+          </button>
+        )}
+      </div>
+
+      {/* BLS test panel */}
+      {showBlsTest && (
+        <div className="absolute top-12 left-4 z-30 bg-black/80 border border-white/10 rounded-lg p-4 space-y-2">
+          <p className="text-xs text-white/50 mb-2">Manual BLS Test</p>
+          <button
+            onClick={handleTestBlss}
+            className="block w-full px-4 py-2 bg-violet-600 hover:bg-violet-500 text-white text-sm rounded"
+          >
+            Start BLS (30s, white, 2Hz)
+          </button>
+          <button
+            onClick={() => useSessionStore.getState().startBls({ speedHz: 1.0, durationSeconds: 30, color: 'amber' })}
+            className="block w-full px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white text-sm rounded"
+          >
+            Start BLS (30s, amber, 1Hz)
+          </button>
+          <button
+            onClick={() => useSessionStore.getState().stopBls()}
+            className="block w-full px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-sm rounded"
+          >
+            Stop BLS
+          </button>
+        </div>
+      )}
+
       <div className="flex-1 flex">
         <div className="relative w-1/2">
           <Lightbar />
