@@ -238,8 +238,8 @@ export class InworldClient {
         throw new Error('NEXT_PUBLIC_INWORLD_API_KEY is not set');
       }
 
-      // Inworld uses Basic Auth — key is base64("key:secret"), sent as query param
-      this.ws = new WebSocket(`wss://api.inworld.ai/v1/realtime?api_key=${encodeURIComponent(INWORLD_API_KEY)}`);
+      // Inworld uses Basic Auth — key is base64("key:secret"), sent as query param (raw, not encoded)
+      this.ws = new WebSocket(`wss://api.inworld.ai/v1/realtime?api_key=${INWORLD_API_KEY}`);
 
       await new Promise<void>((resolve, reject) => {
         if (!this.ws) return reject(new Error('WebSocket not created'));
