@@ -1,10 +1,10 @@
 /**
  * Inworld AI Realtime Client
- * Uses Inworld's Realtime API (OpenAI-compatible schema)
+ * Uses Inworld's Realtime API with Basic Auth
  * Connects to wss://api.inworld.ai/v1/realtime
  * 
- * NOTE: Set NEXT_PUBLIC_INWORLD_API_KEY to a valid Inworld API key.
- * If the key is invalid or connection fails, the client will show an error state.
+ * API key format: base64 encoded "key:secret"
+ * Auth: Basic Auth via WebSocket sub-protocol
  */
 
 import { useSessionStore } from './store';
@@ -123,7 +123,7 @@ class AudioStreamer {
   }
 }
 
-// ── Audio Recorder using ScriptProcessorNode ────────────────────────────────
+// ── Audio Recorder ──────────────────────────────────────────────────────────
 class AudioRecorder {
   private stream: MediaStream | null = null;
   private audioContext: AudioContext | null = null;
@@ -206,7 +206,6 @@ export class InworldClient {
   private audioOutCtx: AudioContext | null = null;
   private isMuted = false;
   private connectionResolved = false;
-  private sessionId: string | null = null;
 
   onTranscript: ((text: string, speaker: 'ai' | 'user') => void) | null = null;
   onStateChange: ((state: ConnectionState) => void) | null = null;
@@ -236,11 +235,15 @@ export class InworldClient {
       this.connectionResolved = false;
 
       if (!INWORLD_API_KEY) {
-        throw new Error('NEXT_PUBLIC_INWORLD_API_KEY is not set. Add it to .env.local');
+        throw new Error('NEXT_PUBLIC_INWORLD_API_KEY is not set');
       }
 
-      // Inworld Realtime API endpoint — key as sub-protocol
-      this.ws = new WebSocket(`wss://api.inworld.ai/v1/realtime`, ['inworld', INWORLD_API_KEY]);
+      // Inworld uses Basic Auth — the key IS the base64 encoded "key:secret"
+      // WebSocket sub-protocol for auth
+      this.ws = new WebSocket(`wss://api.inworld.ai/v1/realtime`, [
+        'basic',
+        INWORLD_API_KEY
+      ]);
 
       await new Promise<void>((resolve, reject) => {
         if (!this.ws) return reject(new Error('WebSocket not created'));
@@ -341,21 +344,13 @@ export class InworldClient {
   private handleJsonMessage(msg: any) {
     console.log('[Inworld] Message type:', msg.type);
 
-    if (msg.type === 'session.created') {
-      this.sessionId = msg.session?.id;
-      this.setState('ready');
-      return;
-    }
-
-    if (msg.type === 'session.ready') {
+    if (msg.type === 'session.created' || msg.type === 'session.ready') {
       this.setState('ready');
       return;
     }
 
     if (msg.type === 'response.done') {
-      if (this.getState() === 'streaming') {
-        this.setState('ready');
-      }
+      if (this.getState() === 'streaming') this.setState('ready');
       return;
     }
 
@@ -364,23 +359,17 @@ export class InworldClient {
         const bytes = base64ToUint8Array(msg.delta.audio);
         this.getOrCreateAudioStreamer().addPCM16(bytes);
       }
-      if (this.getState() === 'ready') {
-        this.setState('streaming');
-      }
+      if (this.getState() === 'ready') this.setState('streaming');
       return;
     }
 
     if (msg.type === 'response.audio_transcript.delta') {
-      if (msg.delta?.text) {
-        this.onTranscript?.(msg.delta.text, 'ai');
-      }
+      if (msg.delta?.text) this.onTranscript?.(msg.delta.text, 'ai');
       return;
     }
 
     if (msg.type === 'conversation.item.input_audio_transcription.completed') {
-      if (msg.transcript) {
-        this.onTranscript?.(msg.transcript, 'user');
-      }
+      if (msg.transcript) this.onTranscript?.(msg.transcript, 'user');
       return;
     }
 
@@ -400,7 +389,6 @@ export class InworldClient {
     const callId = msg.call_id;
     const name = msg.name;
     const argsStr = msg.arguments;
-
     if (!name) return;
 
     try {
@@ -410,11 +398,7 @@ export class InworldClient {
       if (this.ws?.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify({
           type: 'conversation.item.create',
-          item: {
-            type: 'function_call_output',
-            call_id: callId,
-            output: JSON.stringify(result),
-          },
+          item: { type: 'function_call_output', call_id: callId, output: JSON.stringify(result) },
         }));
         this.ws.send(JSON.stringify({ type: 'response.create' }));
       }
@@ -431,11 +415,7 @@ export class InworldClient {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({
         type: 'conversation.item.create',
-        item: {
-          type: 'message',
-          role: 'user',
-          content: [{ type: 'input_text', text }],
-        },
+        item: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] },
       }));
       this.ws.send(JSON.stringify({ type: 'response.create' }));
     }
@@ -443,21 +423,11 @@ export class InworldClient {
 
   sendAudioChunk(pcm16Base64: string) {
     if (this.isMuted || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    this.ws.send(JSON.stringify({
-      type: 'input_audio_buffer.append',
-      audio: pcm16Base64,
-    }));
+    this.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: pcm16Base64 }));
   }
 
-  muteMic() {
-    this.isMuted = true;
-    this.audioRecorder?.setMuted(true);
-  }
-
-  unmuteMic() {
-    this.isMuted = false;
-    this.audioRecorder?.setMuted(false);
-  }
+  muteMic() { this.isMuted = true; this.audioRecorder?.setMuted(true); }
+  unmuteMic() { this.isMuted = false; this.audioRecorder?.setMuted(false); }
 
   disconnect() {
     this.audioRecorder?.stop();
