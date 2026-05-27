@@ -279,22 +279,27 @@ export class GeminiClient {
       });
 
       // Handle messages - SET THIS UP BEFORE SENDING SETUP
-      this.ws.onmessage = (event) => {
-        if (typeof event.data === 'string') {
-          try {
-            const msg = JSON.parse(event.data);
-            console.log('[Gemini] JSON message received:', JSON.stringify(msg).substring(0, 200));
-            this.handleJsonMessage(msg);
-          } catch (e) {
-            console.error('[Gemini] JSON parse error:', e);
-          }
-        } else {
-          // Binary messages are real-time audio data from Gemini
-          const bytes = new Uint8Array(event.data as ArrayBuffer);
-          console.log('[Gemini] Audio binary message:', bytes.length, 'bytes');
-          this.getOrCreateAudioStreamer().addPCM16(bytes);
-        }
-      };
+          this.ws.onmessage = (event) => {
+            if (typeof event.data === 'string') {
+              try {
+                const msg = JSON.parse(event.data);
+                console.log('[Gemini] JSON message received:', JSON.stringify(msg).substring(0, 200));
+                this.handleJsonMessage(msg);
+              } catch (e) {
+                console.error('[Gemini] JSON parse error:', e);
+              }
+            } else {
+              // Binary messages are real-time audio data from Gemini
+              const bytes = new Uint8Array(event.data as ArrayBuffer);
+              console.log('[Gemini] Audio binary message:', bytes.length, 'bytes');
+              // Debug: log first few bytes to check format
+              if (bytes.length > 0 && bytes.length < 100) {
+                const sampleBytes = Array.from(bytes.slice(0, 10)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+                console.log('[Gemini] Audio sample (hex):', sampleBytes);
+              }
+              this.getOrCreateAudioStreamer().addPCM16(bytes);
+            }
+          };
 
       // Send setup message
       const store = useSessionStore.getState();
