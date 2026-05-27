@@ -289,17 +289,21 @@ export class GeminiClient {
         if (typeof event.data === 'string') {
           try {
             const msg = JSON.parse(event.data);
+            console.log('[Gemini] JSON msg keys:', Object.keys(msg).join(','));
             this.handleJsonMessage(msg);
           } catch (e) {
             console.error('[Gemini] JSON parse error:', e);
           }
         } else {
-            // Binary messages are real-time audio data from Gemini
-            const bytes = new Uint8Array(event.data as ArrayBuffer);
+          // Binary messages - check if they contain actual data
+          const bytes = new Uint8Array(event.data as ArrayBuffer);
+          if (bytes.length > 0) {
             console.log('[Gemini] Audio binary message:', bytes.length, 'bytes');
             this.getOrCreateAudioStreamer().addPCM16(bytes);
           }
-        };
+          // Skip empty binary messages (0 bytes)
+        }
+      };
 
       // Send setup message
       const store = useSessionStore.getState();
