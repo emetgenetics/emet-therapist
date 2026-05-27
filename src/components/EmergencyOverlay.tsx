@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useSessionStore } from '@/lib/store';
 
 export default function EmergencyOverlay() {
+  const isEmergency = useSessionStore((s) => s.isEmergency);
   const resolveEmergency = useSessionStore((s) => s.resolveEmergency);
   const [scale, setScale] = useState(0.6);
 
@@ -23,6 +24,8 @@ export default function EmergencyOverlay() {
     animId = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(animId);
   }, []);
+
+  if (!isEmergency) return null;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-xl flex items-center justify-center">
