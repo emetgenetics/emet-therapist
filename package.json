@@ -10,8 +10,6 @@
   },
   "dependencies": {
     "@google/genai": "^2.6.0",
-    "@inworld/nodejs-sdk": "^1.17.0",
-    "@inworld/web-core": "^2.10.0",
     "@mediapipe/tasks-vision": "^0.10.35",
     "eventemitter3": "^5.0.4",
     "next": "16.2.6",
