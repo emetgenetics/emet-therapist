@@ -64,8 +64,10 @@ class AudioStreamer {
 
   private scheduleNextBuffer() {
     const SCHEDULE_AHEAD_TIME = 0.2;
+    console.log('[Gemini] AudioStreamer.scheduleNextBuffer, queue length:', this.audioQueue.length, 'playing:', this.isPlaying);
     while (this.audioQueue.length > 0 && this.scheduledTime < this.context.currentTime + SCHEDULE_AHEAD_TIME) {
       const audioData = this.audioQueue.shift()!;
+      console.log('[Gemini] Playing audio buffer, length:', audioData.length, 'samples');
       const audioBuffer = this.createAudioBuffer(audioData);
       const source = this.context.createBufferSource();
       if (this.audioQueue.length === 0) {
@@ -82,12 +84,14 @@ class AudioStreamer {
       const startTime = Math.max(this.scheduledTime, this.context.currentTime);
       source.start(startTime);
       this.scheduledTime = startTime + audioBuffer.duration;
+      console.log('[Gemini] Buffer started, duration:', audioBuffer.duration, 's');
     }
     if (this.audioQueue.length === 0) {
       if (this.isStreamComplete) {
         this.isPlaying = false;
         if (this.checkInterval) { clearInterval(this.checkInterval); this.checkInterval = null; }
       } else if (!this.checkInterval) {
+        console.log('[Gemini] Starting check interval');
         this.checkInterval = window.setInterval(() => {
           if (this.audioQueue.length > 0) { this.scheduleNextBuffer(); }
         }, 100) as unknown as number;
@@ -289,8 +293,15 @@ export class GeminiClient {
             console.error('[Gemini] JSON parse error:', e);
           }
         } else {
-          // Binary messages - log but don't process (audio comes via inline_data in JSON)
-          console.log('[Gemini] Binary message:', event.data?.byteLength || event.data?.size, 'bytes');
+          // Binary messages are real-time audio data from Gemini
+          const bytes = new Uint8Array(event.data as ArrayBuffer);
+          console.log('[Gemini] Audio binary message:', bytes.length, 'bytes');
+          // Debug: log first few bytes to check format
+          if (bytes.length > 0 && bytes.length < 100) {
+            const sampleBytes = Array.from(bytes.slice(0, 10)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+            console.log('[Gemini] Audio sample (hex):', sampleBytes);
+          }
+          this.getOrCreateAudioStreamer().addPCM16(bytes);
         }
       };
 
