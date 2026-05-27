@@ -33,11 +33,19 @@ class AudioStreamer {
   }
 
   private processPCM16Chunk(chunk: Uint8Array): Float32Array {
+    console.log('[Gemini] processPCM16Chunk, input length:', chunk.length, 'bytes');
     const float32Array = new Float32Array(chunk.length / 2);
     const dataView = new DataView(chunk.buffer);
+    console.log('[Gemini] DataView created, buffer length:', chunk.buffer.byteLength);
     for (let i = 0; i < chunk.length / 2; i++) {
-      try { float32Array[i] = dataView.getInt16(i * 2, true) / 32768; } catch (e) { console.error(e); }
+      try {
+        const sample = dataView.getInt16(i * 2, true);
+        float32Array[i] = sample / 32768;
+      } catch (e) {
+        console.error('[Gemini] Error reading sample:', e);
+      }
     }
+    console.log('[Gemini] processPCM16Chunk done, output length:', float32Array.length, 'samples');
     return float32Array;
   }
 
