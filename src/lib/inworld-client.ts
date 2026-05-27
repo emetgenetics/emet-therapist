@@ -256,7 +256,9 @@ export class InworldClient {
       console.log('[Inworld] API key received');
 
       // Step 2: Connect to Inworld Realtime WebSocket
-      await this.connectWebSocket();
+      // Generate a unique session ID (not the API key)
+      const sessionId = `voice-${Date.now()}`;
+      await this.connectWebSocket(sessionId);
 
       // Step 3: Configure the session
       this.sendEvent({
@@ -290,12 +292,15 @@ export class InworldClient {
     }
   }
 
-  private connectWebSocket(): Promise<void> {
+  private connectWebSocket(sessionId?: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      const url = `${REALTIME_URL}?key=${this.apiKey}&protocol=realtime`;
+      const sid = sessionId || `voice-${Date.now()}`;
+      const url = `${REALTIME_URL}?key=${sid}&protocol=realtime`;
+      // Pass API key via WebSocket sub-protocol (browser workaround for custom headers)
+      const authHeader = `Basic ${this.apiKey}`;
       console.log('[Inworld] Connecting to:', url.substring(0, 80) + '...');
 
-      this.ws = new WebSocket(url);
+      this.ws = new WebSocket(url, [authHeader]);
 
       const timeout = setTimeout(() => {
         if (!this.connectionResolved) {
@@ -360,7 +365,8 @@ export class InworldClient {
 
     this.reconnectTimeout = window.setTimeout(async () => {
       try {
-        await this.connectWebSocket();
+        const sessionId = `voice-${Date.now()}`;
+        await this.connectWebSocket(sessionId);
         this.setState('ready');
       } catch (err: any) {
         console.error('[Inworld] Reconnect failed:', err.message);
