@@ -1,14 +1,28 @@
 /**
  * Generate an Inworld session token
- * Implements the IW1-HMAC-SHA256 auth scheme manually
- * Uses gRPC to call GenerateToken on api-engine.inworld.ai
+ * Uses gRPC with IW1-HMAC-SHA256 auth to call GenerateToken
  */
 
 import { NextResponse } from 'next/server';
 import * as crypto from 'crypto';
+import * as cryptoJs from 'crypto-js';
+import * as grpc from '@grpc/grpc-js';
 
 const INWORLD_API_KEY = process.env.NEXT_PUBLIC_INWORLD_API_KEY || '';
-const ENGINE_HOST = 'api-engine.inworld.ai:443';
+const ENGINE_HOST = 'api-engine.inworld.ai';
+
+// Dynamic imports for protobuf classes
+let WorldEngineClient: any;
+let GenerateTokenRequest: any;
+
+function loadProtos() {
+  if (!WorldEngineClient) {
+    const worldEngineGrpc = require('@inworld/nodejs-sdk/proto/ai/inworld/engine/world-engine_grpc_pb');
+    const worldEnginePb = require('@inworld/nodejs-sdk/proto/ai/inworld/engine/world-engine_pb');
+    WorldEngineClient = worldEngineGrpc.WorldEngineClient;
+    GenerateTokenRequest = worldEnginePb.GenerateTokenRequest;
+  }
+}
 
 function parseApiKey(base64Key: string) {
   const decoded = Buffer.from(base64Key, 'base64').toString();
@@ -17,28 +31,55 @@ function parseApiKey(base64Key: string) {
 }
 
 function getDateTime() {
-  const now = new Date();
-  const date = now.toISOString().split('T')[0].replace(/-/g, '');
-  const time = now.toISOString().split('T')[1].replace(/:/g, '').substring(0, 6);
+  const parts = new Date().toISOString().split('T');
+  const date = parts[0].replace(/-/g, '');
+  const time = parts[1].replace(/:/g, '').substring(0, 6);
   return `${date}${time}`;
-}
-
-function hmacSha256(key: string | Buffer, data: string): string {
-  return crypto.createHmac('sha256', key).update(data).digest('hex');
 }
 
 function getAuthorization(apiKey: { key: string; secret: string }, host: string, method: string) {
   const datetime = getDateTime();
   const nonce = crypto.randomBytes(16).toString('hex').slice(1, 12);
-  
-  // Build signature
-  let sig = `IW1${apiKey.secret}`;
+
+  let signature = `IW1${apiKey.secret}`;
   for (const p of [datetime, host.replace(':443', ''), method, nonce]) {
-    sig = hmacSha256(sig, p);
+    signature = cryptoJs.HmacSHA256(p, signature) as any;
   }
-  sig = hmacSha256(sig, 'iw1_request');
-  
-  return `IW1-HMAC-SHA256 ApiKey=${apiKey.key},DateTime=${datetime},Nonce=${nonce},Signature=${sig}`;
+  signature = cryptoJs.HmacSHA256('iw1_request', signature).toString();
+
+  return `IW1-HMAC-SHA256 ApiKey=${apiKey.key},DateTime=${datetime},Nonce=${nonce},Signature=${signature}`;
+}
+
+function generateToken(apiKey: { key: string; secret: string }): Promise<{ token: string; type: string; sessionId: string }> {
+  return new Promise((resolve, reject) => {
+    loadProtos();
+
+    const host = ENGINE_HOST;
+    const method = '/ai.inworld.engine.WorldEngine/GenerateToken';
+    const auth = getAuthorization(apiKey, host, method);
+
+    const client = new WorldEngineClient(`${host}:443`, grpc.credentials.createSsl());
+
+    const request = new GenerateTokenRequest();
+    request.setKey(apiKey.key);
+    // Don't set resources - server determines workspace from key
+
+    const metadata = new grpc.Metadata();
+    metadata.add('authorization', auth);
+
+    client.generateToken(request, metadata, (err: any, response: any) => {
+      if (err) {
+        reject(new Error(`Token generation failed: ${err.message}`));
+        return;
+      }
+      const obj = response.toObject();
+      resolve({
+        token: obj.token,
+        type: obj.type || 'Bearer',
+        sessionId: obj.sessionId,
+      });
+    });
+  });
 }
 
 export const dynamic = 'force-dynamic';
@@ -50,53 +91,8 @@ export async function GET() {
 
   try {
     const apiKey = parseApiKey(INWORLD_API_KEY);
-    const host = ENGINE_HOST.replace(':443', '');
-    const method = 'ai.inworld.engine.WorldEngine/GenerateToken';
-    const auth = getAuthorization(apiKey, host, method);
-
-    // Make gRPC-Web HTTP request to generate token
-    // Inworld uses gRPC-Web which can be called via HTTP POST
-    const url = `https://${ENGINE_HOST}/ai.inworld.engine.WorldEngine/GenerateToken`;
-    
-    // Build the protobuf request for GenerateToken
-    // GenerateTokenRequest has: key (string), resources (repeated string)
-    const workspaceId = 'default'; // Extract from scene or use default
-    const resource = `workspaces/${workspaceId}`;
-    
-    // Simple protobuf encoding for GenerateTokenRequest
-    // field 1 (key) = string, field 2 (resources) = repeated string
-    const requestBody = JSON.stringify({
-      key: apiKey.key,
-      resources: [resource],
-    });
-
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': auth,
-        'Accept': 'application/json',
-      },
-      body: requestBody,
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('[Token] gRPC error:', response.status, errorText);
-      return NextResponse.json(
-        { error: `Token generation failed: ${response.status} ${errorText.substring(0, 200)}` },
-        { status: 500 }
-      );
-    }
-
-    const data = await response.json();
-    console.log('[Token] Response:', JSON.stringify(data).substring(0, 200));
-
-    return NextResponse.json({
-      sessionId: data.sessionId || data.session_id,
-      token: data.token,
-      type: data.type || 'Bearer',
-    });
+    const tokenData = await generateToken(apiKey);
+    return NextResponse.json(tokenData);
   } catch (err: any) {
     console.error('[Token] Error:', err);
     return NextResponse.json(
