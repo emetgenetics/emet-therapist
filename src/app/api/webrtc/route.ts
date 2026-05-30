@@ -20,7 +20,7 @@ export async function POST(req: Request) {
   const response = await fetch('https://api.inworld.ai/v1/realtime/calls', {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${apiKey}`,
+      'Authorization': `Basic ${apiKey}`,
       'Content-Type': 'application/sdp',
     },
     body: sdpOffer,
