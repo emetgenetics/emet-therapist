@@ -3,6 +3,8 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useSessionStore } from "@/lib/store";
 import { InworldClient } from "@/lib/inworld-client";
+import { executeTool } from "@/lib/tools";
+import { getPromptForState } from "@/lib/prompts";
 import { initEyeTracker, processEyeFrame } from "@/lib/eye-tracking";
 import Lightbar from "./Lightbar";
 import AudioPanner from "./AudioPanner";
@@ -85,6 +87,18 @@ export default function Session() {
 
     client.onTranscript = (text, speaker) => {
       store.addTranscript({ speaker, text });
+    };
+
+    client.onToolCall = (name, args, callId) => {
+      const result = executeTool(name, args);
+      client.sendToolOutput(callId, result);
+      if (name === 'transition_state') {
+        const { phase, day } = useSessionStore.getState();
+        client.sendEvent({
+          type: 'session.update',
+          session: { instructions: getPromptForState(phase, day) },
+        });
+      }
     };
 
     client.onError = (msg) => {
